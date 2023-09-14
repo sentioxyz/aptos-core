@@ -218,6 +218,18 @@ impl Interpreter {
                         current_frame.pc += 1; // advance past the Call instruction in the caller
                         continue;
                     }
+                    self.call_traces.push(CallTrace {
+                        pc: 0,
+                        module_id: "".to_string(),
+                        func_name: func.name().to_string(),
+                        inputs: self.operand_stack.last_n(func.arg_count()).into_iter(),
+                        outputs: vec![],
+                        type_args: vec![],
+                    }).map_err(|_e| {
+                        let err = PartialVMError::new(StatusCode::ABORTED);
+                        let err = set_err_info!(current_frame, err);
+                        self.maybe_core_dump(err, &current_frame)
+                    })?;
                     let frame = self
                         .make_call_frame(loader, func, vec![])
                         .map_err(|e| self.set_location(e))
