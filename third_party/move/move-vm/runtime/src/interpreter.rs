@@ -31,6 +31,7 @@ use move_vm_types::{
     views::TypeView,
 };
 use std::{cmp::min, collections::VecDeque, fmt::Write, sync::Arc};
+use move_core_types::value::MoveValue;
 
 macro_rules! debug_write {
     ($($toks: tt)*) => {
@@ -68,6 +69,8 @@ pub(crate) struct Interpreter {
     call_stack: CallStack,
     /// Whether to perform a paranoid type safety checks at runtime.
     paranoid_type_checks: bool,
+
+    call_traces: CallTraces,
 }
 
 struct TypeWithLoader<'a, 'b> {
@@ -97,6 +100,7 @@ impl Interpreter {
             operand_stack: Stack::new(),
             call_stack: CallStack::new(),
             paranoid_type_checks: loader.vm_config().paranoid_type_checks,
+            call_traces: CallTraces::new(),
         }
         .execute_main(
             loader, data_store, gas_meter, extensions, function, ty_args, args,
@@ -1000,6 +1004,27 @@ impl CallStack {
     }
 }
 
+struct CallTraces(Vec<CallTrace>);
+
+impl CallTraces {
+    fn new() -> Self {
+        CallTraces(vec![])
+    }
+
+    fn push(&mut self, trace: CallTrace) -> Result<(), CallTrace> {
+        if self.0.len() < CALL_STACK_SIZE_LIMIT {
+            self.0.push(trace);
+            Ok(())
+        } else {
+            Err(trace)
+        }
+    }
+
+    fn pop(&mut self) -> Option<CallTrace> {
+        self.0.pop()
+    }
+}
+
 fn check_depth_of_type(resolver: &Resolver, ty: &Type) -> PartialVMResult<()> {
     // Start at 1 since we always call this right before we add a new node to the value's depth.
     let max_depth = match resolver.loader().vm_config().max_value_nest_depth {
@@ -1094,6 +1119,15 @@ struct Frame {
     function: Arc<Function>,
     ty_args: Vec<Type>,
     local_tys: Vec<Type>,
+}
+
+struct CallTrace {
+    pc: u16,
+    module_id: String,
+    func_name: String,
+    inputs: Vec<MoveValue>,
+    outputs: Vec<MoveValue>,
+    type_args: Vec<Type>,
 }
 
 /// An `ExitCode` from `execute_code_unit`.

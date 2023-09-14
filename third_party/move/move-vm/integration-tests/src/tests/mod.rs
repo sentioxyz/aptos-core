@@ -15,3 +15,4 @@ mod mutated_accounts_tests;
 mod nested_loop_tests;
 mod regression_tests;
 mod return_value_tests;
+mod multi_func_tests;
