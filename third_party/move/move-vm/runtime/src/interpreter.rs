@@ -147,7 +147,7 @@ impl Interpreter {
             inputs: args_1,
             outputs: vec![],
             type_args: current_frame.ty_args.clone(),
-        }).map_err(|e| {
+        }).map_err(|_e| {
             let err = PartialVMError::new(StatusCode::ABORTED);
             let err = set_err_info!(current_frame, err);
             self.maybe_core_dump(err, &current_frame)
