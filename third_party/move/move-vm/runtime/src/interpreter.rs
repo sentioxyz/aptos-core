@@ -31,7 +31,6 @@ use move_vm_types::{
     views::TypeView,
 };
 use std::{cmp::min, collections::VecDeque, fmt::Write, sync::Arc};
-use move_core_types::value::MoveValue;
 
 macro_rules! debug_write {
     ($($toks: tt)*) => {
@@ -124,21 +123,35 @@ impl Interpreter {
         args: Vec<Value>,
     ) -> VMResult<Vec<Value>> {
         let mut locals = Locals::new(function.local_count());
+        let mut args_1 = vec![];
         for (i, value) in args.into_iter().enumerate() {
             locals
                 .store_loc(
                     i,
-                    value,
+                    value.copy_value().unwrap(),
                     loader
                         .vm_config()
                         .enable_invariant_violation_check_in_swap_loc,
                 )
                 .map_err(|e| self.set_location(e))?;
+            args_1.push(value);
         }
 
         let mut current_frame = self
             .make_new_frame(loader, function, ty_args, locals)
             .map_err(|err| self.set_location(err))?;
+        self.call_traces.push(CallTrace {
+            pc: current_frame.pc,
+            module_id: "".to_string(),
+            func_name: current_frame.function.name().to_string(),
+            inputs: args_1,
+            outputs: vec![],
+            type_args: current_frame.ty_args.clone(),
+        }).map_err(|e| {
+            let err = PartialVMError::new(StatusCode::ABORTED);
+            let err = set_err_info!(current_frame, err);
+            self.maybe_core_dump(err, &current_frame)
+        })?;
         loop {
             let resolver = current_frame.resolver(loader);
             let exit_code =
@@ -1125,8 +1138,8 @@ struct CallTrace {
     pc: u16,
     module_id: String,
     func_name: String,
-    inputs: Vec<MoveValue>,
-    outputs: Vec<MoveValue>,
+    inputs: Vec<Value>,
+    outputs: Vec<Value>,
     type_args: Vec<Type>,
 }
 
