@@ -68,6 +68,8 @@ pub(crate) struct Interpreter {
     call_stack: CallStack,
     /// Whether to perform a paranoid type safety checks at runtime.
     paranoid_type_checks: bool,
+
+    call_traces: CallTraces,
 }
 
 struct TypeWithLoader<'a, 'b> {
@@ -97,6 +99,7 @@ impl Interpreter {
             operand_stack: Stack::new(),
             call_stack: CallStack::new(),
             paranoid_type_checks: loader.vm_config().paranoid_type_checks,
+            call_traces: CallTraces::new(),
         }
         .execute_main(
             loader, data_store, gas_meter, extensions, function, ty_args, args,
@@ -120,21 +123,35 @@ impl Interpreter {
         args: Vec<Value>,
     ) -> VMResult<Vec<Value>> {
         let mut locals = Locals::new(function.local_count());
+        let mut args_1 = vec![];
         for (i, value) in args.into_iter().enumerate() {
             locals
                 .store_loc(
                     i,
-                    value,
+                    value.copy_value().unwrap(),
                     loader
                         .vm_config()
                         .enable_invariant_violation_check_in_swap_loc,
                 )
                 .map_err(|e| self.set_location(e))?;
+            args_1.push(value);
         }
 
         let mut current_frame = self
             .make_new_frame(loader, function, ty_args, locals)
             .map_err(|err| self.set_location(err))?;
+        self.call_traces.push(CallTrace {
+            pc: current_frame.pc,
+            module_id: "".to_string(),
+            func_name: current_frame.function.name().to_string(),
+            inputs: args_1,
+            outputs: vec![],
+            type_args: current_frame.ty_args.clone(),
+        }).map_err(|_e| {
+            let err = PartialVMError::new(StatusCode::ABORTED);
+            let err = set_err_info!(current_frame, err);
+            self.maybe_core_dump(err, &current_frame)
+        })?;
         loop {
             let resolver = current_frame.resolver(loader);
             let exit_code =
@@ -1000,6 +1017,27 @@ impl CallStack {
     }
 }
 
+struct CallTraces(Vec<CallTrace>);
+
+impl CallTraces {
+    fn new() -> Self {
+        CallTraces(vec![])
+    }
+
+    fn push(&mut self, trace: CallTrace) -> Result<(), CallTrace> {
+        if self.0.len() < CALL_STACK_SIZE_LIMIT {
+            self.0.push(trace);
+            Ok(())
+        } else {
+            Err(trace)
+        }
+    }
+
+    fn pop(&mut self) -> Option<CallTrace> {
+        self.0.pop()
+    }
+}
+
 fn check_depth_of_type(resolver: &Resolver, ty: &Type) -> PartialVMResult<()> {
     // Start at 1 since we always call this right before we add a new node to the value's depth.
     let max_depth = match resolver.loader().vm_config().max_value_nest_depth {
@@ -1094,6 +1132,15 @@ struct Frame {
     function: Arc<Function>,
     ty_args: Vec<Type>,
     local_tys: Vec<Type>,
+}
+
+struct CallTrace {
+    pc: u16,
+    module_id: String,
+    func_name: String,
+    inputs: Vec<Value>,
+    outputs: Vec<Value>,
+    type_args: Vec<Type>,
 }
 
 /// An `ExitCode` from `execute_code_unit`.
