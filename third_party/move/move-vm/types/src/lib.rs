@@ -30,3 +30,4 @@ pub mod views;
 
 #[cfg(test)]
 mod unit_tests;
+pub mod call_trace;
