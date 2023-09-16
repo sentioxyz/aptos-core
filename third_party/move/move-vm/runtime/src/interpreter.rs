@@ -218,11 +218,15 @@ impl Interpreter {
                         current_frame.pc += 1; // advance past the Call instruction in the caller
                         continue;
                     }
+                    let mut inputs = vec![];
+                    for val in self.operand_stack.last_n(func.arg_count()).unwrap() {
+                        inputs.push((*val).copy_value().unwrap());
+                    }
                     self.call_traces.push(CallTrace {
                         pc: 0,
                         module_id: "".to_string(),
                         func_name: func.name().to_string(),
-                        inputs: self.operand_stack.last_n(func.arg_count()).into_iter(),
+                        inputs,
                         outputs: vec![],
                         type_args: vec![],
                     }).map_err(|_e| {
