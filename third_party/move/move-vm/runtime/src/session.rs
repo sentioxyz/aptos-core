@@ -23,6 +23,7 @@ use move_vm_types::{
     gas::GasMeter,
     loaded_data::runtime_types::{CachedStructIndex, StructType, Type},
     values::{GlobalValue, Value},
+    call_trace::CallTraces,
 };
 use std::{borrow::Borrow, sync::Arc};
 
@@ -101,6 +102,27 @@ impl<'r, 'l> Session<'r, 'l> {
     ) -> VMResult<SerializedReturnValues> {
         let bypass_declared_entry_check = true;
         self.move_vm.runtime.execute_function(
+            module,
+            function_name,
+            ty_args,
+            args,
+            &mut self.data_cache,
+            gas_meter,
+            &mut self.native_extensions,
+            bypass_declared_entry_check,
+        )
+    }
+
+    pub fn call_trace(
+        &mut self,
+        module: &ModuleId,
+        function_name: &IdentStr,
+        ty_args: Vec<TypeTag>,
+        args: Vec<impl Borrow<[u8]>>,
+        gas_meter: &mut impl GasMeter
+    ) -> VMResult<CallTraces> {
+        let bypass_declared_entry_check = true;
+        self.move_vm.runtime.call_trace(
             module,
             function_name,
             ty_args,
