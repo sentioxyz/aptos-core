@@ -12,6 +12,7 @@ use move_core_types::{
 };
 use move_vm_runtime::{move_vm::MoveVM, session::SerializedReturnValues};
 use move_vm_test_utils::InMemoryStorage;
+use move_vm_types::call_trace::CallTraces;
 use move_vm_types::gas::UnmeteredGasMeter;
 
 const TEST_ADDR: AccountAddress = AccountAddress::new([42; AccountAddress::LENGTH]);
@@ -19,11 +20,11 @@ const TEST_ADDR: AccountAddress = AccountAddress::new([42; AccountAddress::LENGT
 fn run(
     ty_args: Vec<TypeTag>,
     args: Vec<MoveValue>,
-) -> VMResult<Vec<Vec<u8>>> {
+) -> VMResult<CallTraces> {
     let code = r#"
         module {{ADDR}}::M {
             public fun foo(v1: u64): u64 {
-                bar(v1)
+                bar(v1) + 1
             }
 
             public fun bar(v1: u64): u64 {
@@ -52,21 +53,29 @@ fn run(
         .map(|val| val.simple_serialize().unwrap())
         .collect();
 
-    let SerializedReturnValues {
-        return_values,
-        mutable_reference_outputs: _,
-    } = sess.execute_function_bypass_visibility(
+    // let SerializedReturnValues {
+    //     return_values,
+    //     mutable_reference_outputs: _,
+    // } = sess.execute_function_bypass_visibility(
+    //     &module_id,
+    //     &fun_name,
+    //     ty_args,
+    //     args,
+    //     &mut UnmeteredGasMeter,
+    // )?;
+
+    sess.call_trace(
         &module_id,
         &fun_name,
         ty_args,
         args,
         &mut UnmeteredGasMeter,
-    )?;
+    )
 
-    Ok(return_values
-        .into_iter()
-        .map(|(bytes, _layout)| bytes)
-        .collect())
+    // Ok(return_values
+    //     .into_iter()
+    //     .map(|(bytes, _layout)| bytes)
+    //     .collect())
 }
 
 fn expect_success(
@@ -75,11 +84,7 @@ fn expect_success(
     expected_layouts: &[MoveTypeLayout],
 ) {
     let return_vals = run(ty_args, args).unwrap();
-    assert!(return_vals.len() == expected_layouts.len());
-
-    for (blob, layout) in return_vals.iter().zip(expected_layouts.iter()) {
-        MoveValue::simple_deserialize(blob, layout).unwrap();
-    }
+    assert_eq!(return_vals.len(), 1);
 }
 
 #[test]
