@@ -45,6 +45,8 @@ use poem_openapi::{
     ApiRequest, OpenApi,
 };
 use std::sync::Arc;
+use aptos_api_types::call_trace::CallTrace;
+use aptos_types::transaction::Version;
 
 generate_success_response!(SubmitTransactionResponse, (202, Accepted));
 
@@ -71,6 +73,8 @@ type SubmitTransactionsBatchResult<T> =
     poem::Result<SubmitTransactionsBatchResponse<T>, SubmitTransactionError>;
 
 type SimulateTransactionResult<T> = poem::Result<BasicResponse<T>, SubmitTransactionError>;
+
+type DebugCallTraceResult<T> = poem::Result<BasicResponse<T>, SubmitTransactionError>;
 
 // TODO: Consider making both content types accept either
 // SubmitTransactionRequest or SignedTransaction, the way
@@ -203,6 +207,106 @@ impl TransactionsApi {
             .check_api_output_enabled("Get transactions by hash", &accept_type)?;
         self.get_transaction_by_hash_inner(&accept_type, txn_hash.0)
             .await
+    }
+
+    async fn get_transaction_call_trace_by_hash(
+        &self,
+        accept_type: AcceptType,
+        /// Hash of transaction to retrieve
+        txn_hash: Path<HashValue>,
+    ) -> BasicResultWith404<Vec<CallTraces>> {
+        fail_point_poem("endpoint_transaction_call_trace_by_hash")?;
+        self.context
+            .check_api_output_enabled("Get transaction call trace by hash", &accept_type)?;
+        let ledger_info = self.context.get_latest_ledger_info()?;
+        let hash = txn_hash.0;
+        let txn_data = self
+            .get_by_hash(hash.into(), &ledger_info)
+            .await
+            .context(format!("Failed to get transaction by hash {}", hash))
+            .map_err(|err| {
+                BasicErrorWith404::internal_with_code(
+                    err,
+                    AptosErrorCode::InternalError,
+                    &ledger_info,
+                )
+            })?
+            .context(format!("Failed to find transaction with hash: {}", hash))
+            .map_err(|_| transaction_not_found_by_hash(hash, &ledger_info))?;
+
+        let state_view = self.context.latest_state_view_poem(&ledger_info)?;
+        let resolver = state_view.as_move_resolver();
+        let transaction = match txn_data {
+            TransactionData::OnChain(txn) => {
+                let timestamp =
+                    self.context.get_block_timestamp(&ledger_info, txn.version)?;
+                resolver
+                    .as_converter(self.context.db.clone())
+                    .try_into_onchain_transaction(timestamp, txn)
+                    .context("Failed to convert on chain transaction to Transaction")
+                    .map_err(|err| {
+                        BasicErrorWith404::internal_with_code(
+                            err,
+                            AptosErrorCode::InternalError,
+                            &ledger_info,
+                        )
+                    })?
+            },
+            TransactionData::Pending(txn) => resolver
+                .as_converter(self.context.db.clone())
+                .try_into_pending_transaction(*txn)
+                .context("Failed to convert on pending transaction to Transaction")
+                .map_err(|err| {
+                    BasicErrorWith404::internal_with_code(
+                        err,
+                        AptosErrorCode::InternalError,
+                        &ledger_info,
+                    )
+                })?,
+        };
+
+        let call_trace = match transaction {
+            Transaction::PendingTransaction(_) => {
+                Err(SubmitTransactionError::bad_request_with_code(
+                    "Cannot get ing status",
+                    AptosErrorCode::InvalidInput,
+                    &ledger_info,
+                ))
+            }
+            Transaction::UserTransaction(user_transaction) => {
+                let state_view = self
+                    .context
+                    .state_view_at_version(Version::from(user_transaction.info.version))
+                    .map_err(|err| {
+                        BasicErrorWith404::bad_request_with_code(
+                            err,
+                            AptosErrorCode::InternalError,
+                            &ledger_info,
+                        )
+                    })?;
+                let payload = user_transaction.request.payload;
+                match payload {
+                    aptos_api_types::TransactionPayload::EntryFunctionPayload(entry_func) => {
+                        AptosVM::get_call_trace(
+                            &state_view,
+                            entry_func.module().clone(),
+                            entry_func.function().to_owned(),
+                            entry_func.ty_args().to_owned(),
+                            entry_func.args().to_owned(),
+                            self.context.node_config.api.max_gas_view_function,
+                        )
+                    }
+                    aptos_api_types::TransactionPayload::ScriptPayload(_) => {}
+                    aptos_api_types::TransactionPayload::ModuleBundlePayload(_) => {}
+                    aptos_api_types::TransactionPayload::MultisigPayload(_) => {}
+                }
+            }
+            Transaction::GenesisTransaction(_) => {}
+            Transaction::BlockMetadataTransaction(_) => {}
+            Transaction::StateCheckpointTransaction(_) => {}
+        };
+
+        BasicResponse::try_from_json((call_trace.unwrap(), &ledger_info, BasicResponseStatus::Ok))
     }
 
     /// Get transaction by version
