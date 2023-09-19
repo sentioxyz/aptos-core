@@ -45,8 +45,8 @@ use poem_openapi::{
     ApiRequest, OpenApi,
 };
 use std::sync::Arc;
-use aptos_api_types::call_trace::CallTrace;
 use aptos_types::transaction::Version;
+use move_core_types::call_trace::{CallTrace, CallTraces};
 
 generate_success_response!(SubmitTransactionResponse, (202, Accepted));
 
@@ -209,12 +209,18 @@ impl TransactionsApi {
             .await
     }
 
+    #[oai(
+    path = "/call_trace/by_hash/:txn_hash",
+    method = "get",
+    operation_id = "get_transaction_call_trace_by_hash",
+    tag = "ApiTags::Transactions"
+    )]
     async fn get_transaction_call_trace_by_hash(
         &self,
         accept_type: AcceptType,
         /// Hash of transaction to retrieve
         txn_hash: Path<HashValue>,
-    ) -> BasicResultWith404<Vec<CallTraces>> {
+    ) -> BasicResultWith404<CallTrace> {
         fail_point_poem("endpoint_transaction_call_trace_by_hash")?;
         self.context
             .check_api_output_enabled("Get transaction call trace by hash", &accept_type)?;
@@ -306,7 +312,14 @@ impl TransactionsApi {
             Transaction::StateCheckpointTransaction(_) => {}
         };
 
-        BasicResponse::try_from_json((call_trace.unwrap(), &ledger_info, BasicResponseStatus::Ok))
+        match call_trace {
+            Ok(_call_trace) => {
+                BasicResponse::try_from_json((_call_trace[0], &ledger_info, BasicResponseStatus::Ok))
+            }
+            Err(err) => {
+                err
+            }
+        }
     }
 
     /// Get transaction by version

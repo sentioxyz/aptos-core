@@ -30,9 +30,9 @@ use move_vm_types::{
     gas::GasMeter,
     loaded_data::runtime_types::Type,
     values::{Locals, Reference, VMValueCast, Value},
-    call_trace::CallTraces,
 };
 use std::{borrow::Borrow, collections::BTreeSet, sync::Arc};
+use move_core_types::call_trace::{CallTraces};
 
 /// An instantiation of the MoveVM.
 pub(crate) struct VMRuntime {

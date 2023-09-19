@@ -2,7 +2,7 @@
 // Copyright (c) The Move Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::{data_cache::TransactionDataCache, interpreter, loader::{Function, Loader, Resolver}, native_extensions::NativeContextExtensions, native_functions::NativeContext, trace};
+use crate::{data_cache::TransactionDataCache, loader::{Function, Loader, Resolver}, native_extensions::NativeContextExtensions, native_functions::NativeContext, trace};
 use fail::fail_point;
 use move_binary_format::{
     errors::*,
@@ -23,9 +23,9 @@ use move_vm_types::{
         Vector, VectorRef,
     },
     views::TypeView,
-    call_trace::{CallTraces, CallTrace},
 };
 use std::{cmp::min, collections::VecDeque, fmt::Write, sync::Arc};
+use move_core_types::call_trace::{CallTrace, CallTraces};
 
 macro_rules! debug_write {
     ($($toks: tt)*) => {
@@ -317,7 +317,8 @@ impl Interpreter {
             func_name: current_frame.function.name().to_string(),
             inputs: args_1.into_iter().enumerate().map(|(_, i)| i.to_string()).collect(),
             outputs: vec![],
-            type_args: current_frame.ty_args.into_iter().enumerate().map(|(_, i)| i.to_string()).collect().clone(),
+            // TODO(pcxu): add type args
+            type_args: vec![],
             sub_traces: vec![],
         }).map_err(|_e| {
             let err = PartialVMError::new(StatusCode::ABORTED);
@@ -347,7 +348,7 @@ impl Interpreter {
                     for val in self.operand_stack.last_n(current_frame.function.return_type_count()).unwrap() {
                         outputs.push((*val).copy_value().unwrap());
                     }
-                    call_traces.set_outputs(outputs);
+                    call_traces.set_outputs(outputs.into_iter().enumerate().map(|(_, o)| {o.to_string()}).collect());
 
                     if let Some(frame) = self.call_stack.pop() {
                         // Note: the caller will find the callee's return values at the top of the shared operand stack

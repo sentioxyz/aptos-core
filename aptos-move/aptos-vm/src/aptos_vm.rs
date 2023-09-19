@@ -78,6 +78,7 @@ use std::{
         Arc,
     },
 };
+use move_core_types::call_trace::CallTraces;
 // use move_vm_types::call_trace::CallTraces;
 
 static EXECUTION_CONCURRENCY_LEVEL: OnceCell<usize> = OnceCell::new();
@@ -1418,7 +1419,7 @@ impl AptosVM {
         type_args: Vec<TypeTag>,
         arguments: Vec<Vec<u8>>,
         gas_budget: u64,
-    ) -> VMResult<CallTraces> {
+    ) -> Result<CallTraces> {
         let vm = AptosVM::new_from_state_view(state_view);
         let log_context = AdapterLogSchema::new(state_view.id(), 0);
         let mut gas_meter =
@@ -1430,7 +1431,7 @@ impl AptosVM {
             )));
         let resolver = vm.as_move_resolver(state_view);
         let mut session = vm.new_session(&resolver, SessionId::Void);
-        session.call_trace(&module_id, &func_name, type_args, arguments, &mut gas_meter)
+        Ok(session.call_trace(&module_id, &func_name, type_args, arguments, &mut gas_meter).unwrap())
     }
 
     pub fn execute_view_function(
