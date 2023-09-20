@@ -19,14 +19,7 @@ use crate::{
     ApiTags,
 };
 use anyhow::{anyhow, Context as AnyhowContext};
-use aptos_api_types::{
-    verify_function_identifier, verify_module_identifier, Address, AptosError, AptosErrorCode,
-    AsConverter, EncodeSubmissionRequest, GasEstimation, GasEstimationBcs, HashValue,
-    HexEncodedBytes, LedgerInfo, MoveType, PendingTransaction, SubmitTransactionRequest,
-    Transaction, TransactionData, TransactionOnChainData, TransactionsBatchSingleSubmissionFailure,
-    TransactionsBatchSubmissionResult, UserTransaction, VerifyInput, VerifyInputWithRecursion,
-    MAX_RECURSIVE_TYPES_ALLOWED, U64,
-};
+use aptos_api_types::{verify_function_identifier, verify_module_identifier, Address, AptosError, AptosErrorCode, AsConverter, EncodeSubmissionRequest, GasEstimation, GasEstimationBcs, HashValue, HexEncodedBytes, LedgerInfo, MoveType, PendingTransaction, SubmitTransactionRequest, Transaction, TransactionData, TransactionOnChainData, TransactionsBatchSingleSubmissionFailure, TransactionsBatchSubmissionResult, UserTransaction, VerifyInput, VerifyInputWithRecursion, MAX_RECURSIVE_TYPES_ALLOWED, U64, ViewRequest};
 use aptos_crypto::{hash::CryptoHash, signing_message};
 use aptos_types::{
     account_config::CoinStoreResource,
@@ -45,8 +38,9 @@ use poem_openapi::{
     ApiRequest, OpenApi,
 };
 use std::sync::Arc;
+use aptos_api_types::call_trace::{CallTrace};
 use aptos_types::transaction::Version;
-use move_core_types::call_trace::{CallTrace, CallTraces};
+use move_core_types::call_trace::CallTraces;
 
 generate_success_response!(SubmitTransactionResponse, (202, Accepted));
 
@@ -273,11 +267,7 @@ impl TransactionsApi {
 
         let call_trace = match transaction {
             Transaction::PendingTransaction(_) => {
-                Err(SubmitTransactionError::bad_request_with_code(
-                    "Cannot get ing status",
-                    AptosErrorCode::InvalidInput,
-                    &ledger_info,
-                ))
+                Ok(CallTraces::new())
             }
             Transaction::UserTransaction(user_transaction) => {
                 let state_view = self
@@ -292,7 +282,21 @@ impl TransactionsApi {
                     })?;
                 let payload = user_transaction.request.payload;
                 match payload {
-                    aptos_api_types::TransactionPayload::EntryFunctionPayload(entry_func) => {
+                    aptos_api_types::TransactionPayload::EntryFunctionPayload(entry_func_payload) => {
+                        let entry_func = resolver
+                            .as_converter(self.context.db.clone())
+                            .convert_view_function(ViewRequest {
+                                function: entry_func_payload.function,
+                                type_arguments: entry_func_payload.type_arguments,
+                                arguments: entry_func_payload.arguments
+                            })
+                            .map_err(|err| {
+                                BasicErrorWith404::bad_request_with_code(
+                                    err,
+                                    AptosErrorCode::InvalidInput,
+                                    &ledger_info,
+                                )
+                            })?;
                         AptosVM::get_call_trace(
                             &state_view,
                             entry_func.module().clone(),
@@ -302,22 +306,26 @@ impl TransactionsApi {
                             self.context.node_config.api.max_gas_view_function,
                         )
                     }
-                    aptos_api_types::TransactionPayload::ScriptPayload(_) => {}
-                    aptos_api_types::TransactionPayload::ModuleBundlePayload(_) => {}
-                    aptos_api_types::TransactionPayload::MultisigPayload(_) => {}
+                    aptos_api_types::TransactionPayload::ScriptPayload(_) => {Ok(CallTraces::new())}
+                    aptos_api_types::TransactionPayload::ModuleBundlePayload(_) => {Ok(CallTraces::new())}
+                    aptos_api_types::TransactionPayload::MultisigPayload(_) => {Ok(CallTraces::new())}
                 }
             }
-            Transaction::GenesisTransaction(_) => {}
-            Transaction::BlockMetadataTransaction(_) => {}
-            Transaction::StateCheckpointTransaction(_) => {}
+            Transaction::GenesisTransaction(_) => {Ok(CallTraces::new())}
+            Transaction::BlockMetadataTransaction(_) => {Ok(CallTraces::new())}
+            Transaction::StateCheckpointTransaction(_) => {Ok(CallTraces::new())}
         };
 
         match call_trace {
-            Ok(_call_trace) => {
-                BasicResponse::try_from_json((_call_trace[0], &ledger_info, BasicResponseStatus::Ok))
+            Ok(mut _call_traces) => {
+                BasicResponse::try_from_json((CallTrace::from(_call_traces.root().unwrap()), &ledger_info, BasicResponseStatus::Ok))
             }
-            Err(err) => {
-                err
+            Err(_) => {
+                Err(BasicErrorWith404::bad_request_with_code(
+                        "Cannot get ing status",
+                        AptosErrorCode::InvalidInput,
+                        &ledger_info,
+                ))
             }
         }
     }

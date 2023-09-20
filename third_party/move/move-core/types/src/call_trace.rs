@@ -6,25 +6,25 @@ const CALL_STACK_SIZE_LIMIT: usize = 1024;
 ///
 /// This is a representation of the debug call trace
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct CallTrace {
+pub struct InternalCallTrace {
     pub pc: u16,
     pub module_id: String,
     pub func_name: String,
     pub inputs: Vec<String>,
     pub outputs: Vec<String>,
     pub type_args: Vec<String>,
-    pub sub_traces: Vec<CallTrace>,
+    pub sub_traces: Vec<InternalCallTrace>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct CallTraces(Vec<CallTrace>);
+pub struct CallTraces(Vec<InternalCallTrace>);
 
 impl CallTraces {
     pub fn new() -> Self {
         CallTraces(vec![])
     }
 
-    pub fn push(&mut self, trace: CallTrace) -> Result<(), CallTrace> {
+    pub fn push(&mut self, trace: InternalCallTrace) -> Result<(), InternalCallTrace> {
         if self.0.len() < CALL_STACK_SIZE_LIMIT {
             self.0.push(trace);
             Ok(())
@@ -33,7 +33,7 @@ impl CallTraces {
         }
     }
 
-    pub fn pop(&mut self) -> Option<CallTrace> {
+    pub fn pop(&mut self) -> Option<InternalCallTrace> {
         self.0.pop()
     }
 
@@ -42,12 +42,16 @@ impl CallTraces {
         self.0[length - 1].outputs = outputs
     }
 
-    pub fn push_call_trace(&mut self, call_trace: CallTrace) {
+    pub fn push_call_trace(&mut self, call_trace: InternalCallTrace) {
         let length = self.0.len();
         self.0[length - 1].sub_traces.push(call_trace);
     }
 
     pub fn len(&self) -> usize {
         self.0.len()
+    }
+
+    pub fn root(&mut self) -> Option<InternalCallTrace> {
+        self.0.pop()
     }
 }

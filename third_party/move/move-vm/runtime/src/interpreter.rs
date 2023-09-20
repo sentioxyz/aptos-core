@@ -25,7 +25,7 @@ use move_vm_types::{
     views::TypeView,
 };
 use std::{cmp::min, collections::VecDeque, fmt::Write, sync::Arc};
-use move_core_types::call_trace::{CallTrace, CallTraces};
+use move_core_types::call_trace::{InternalCallTrace, CallTraces};
 
 macro_rules! debug_write {
     ($($toks: tt)*) => {
@@ -311,7 +311,7 @@ impl Interpreter {
         let mut current_frame = self
             .make_new_frame(loader, function, ty_args, locals)
             .map_err(|err| self.set_location(err))?;
-        call_traces.push(CallTrace {
+        call_traces.push(InternalCallTrace {
             pc: current_frame.pc,
             module_id: "".to_string(),
             func_name: current_frame.function.name().to_string(),
@@ -403,7 +403,7 @@ impl Interpreter {
                     for val in self.operand_stack.last_n(func.arg_count()).unwrap() {
                         inputs.push((*val).copy_value().unwrap());
                     }
-                    call_traces.push(CallTrace {
+                    call_traces.push(InternalCallTrace {
                         pc: 0,
                         module_id: "".to_string(),
                         func_name: func.name().to_string(),
@@ -470,7 +470,7 @@ impl Interpreter {
                     for val in self.operand_stack.last_n(func.arg_count()).unwrap() {
                         inputs.push((*val).copy_value().unwrap());
                     }
-                    call_traces.push(CallTrace {
+                    call_traces.push(InternalCallTrace {
                         pc: 0,
                         module_id: "".to_string(),
                         func_name: func.name().to_string(),
