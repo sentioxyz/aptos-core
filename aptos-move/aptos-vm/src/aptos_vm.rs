@@ -78,6 +78,8 @@ use std::{
         Arc,
     },
 };
+use move_core_types::call_trace::CallTraces;
+// use move_vm_types::call_trace::CallTraces;
 
 static EXECUTION_CONCURRENCY_LEVEL: OnceCell<usize> = OnceCell::new();
 static NUM_EXECUTION_SHARD: OnceCell<usize> = OnceCell::new();
@@ -1404,6 +1406,28 @@ impl AptosVM {
                 .try_into_transaction_output(state_view)
                 .expect("Simulation cannot fail"),
         )
+    }
+
+    pub fn get_call_trace(
+        state_view: &impl StateView,
+        module_id: ModuleId,
+        func_name: Identifier,
+        type_args: Vec<TypeTag>,
+        arguments: Vec<Vec<u8>>,
+        gas_budget: u64,
+    ) -> Result<CallTraces> {
+        let vm = AptosVM::new_from_state_view(state_view);
+        let log_context = AdapterLogSchema::new(state_view.id(), 0);
+        let mut gas_meter =
+            MemoryTrackedGasMeter::new(StandardGasMeter::new(StandardGasAlgebra::new(
+                vm.0.get_gas_feature_version(),
+                vm.0.get_gas_parameters(&log_context)?.vm.clone(),
+                vm.0.get_storage_gas_parameters(&log_context)?.clone(),
+                gas_budget,
+            )));
+        let resolver = vm.as_move_resolver(state_view);
+        let mut session = vm.new_session(&resolver, SessionId::Void);
+        Ok(session.call_trace(&module_id, &func_name, type_args, arguments, &mut gas_meter).unwrap())
     }
 
     pub fn execute_view_function(
