@@ -2,7 +2,7 @@
 // Copyright (c) The Move Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::{data_cache::TransactionDataCache, interpreter, loader::{Function, Loader, Resolver}, native_extensions::NativeContextExtensions, native_functions::NativeContext, trace};
+use crate::{data_cache::TransactionDataCache, loader::{Function, Loader, Resolver}, native_extensions::NativeContextExtensions, native_functions::NativeContext, trace};
 use fail::fail_point;
 use move_binary_format::{
     errors::*,
@@ -23,9 +23,9 @@ use move_vm_types::{
         Vector, VectorRef,
     },
     views::TypeView,
-    call_trace::{CallTraces, CallTrace},
 };
 use std::{cmp::min, collections::VecDeque, fmt::Write, sync::Arc};
+use move_core_types::call_trace::{InternalCallTrace, CallTraces};
 
 macro_rules! debug_write {
     ($($toks: tt)*) => {
@@ -311,13 +311,14 @@ impl Interpreter {
         let mut current_frame = self
             .make_new_frame(loader, function, ty_args, locals)
             .map_err(|err| self.set_location(err))?;
-        call_traces.push(CallTrace {
+        call_traces.push(InternalCallTrace {
             pc: current_frame.pc,
             module_id: "".to_string(),
             func_name: current_frame.function.name().to_string(),
-            inputs: args_1,
+            inputs: args_1.into_iter().enumerate().map(|(_, i)| i.to_string()).collect(),
             outputs: vec![],
-            type_args: current_frame.ty_args.clone(),
+            // TODO(pcxu): add type args
+            type_args: vec![],
             sub_traces: vec![],
         }).map_err(|_e| {
             let err = PartialVMError::new(StatusCode::ABORTED);
@@ -347,7 +348,7 @@ impl Interpreter {
                     for val in self.operand_stack.last_n(current_frame.function.return_type_count()).unwrap() {
                         outputs.push((*val).copy_value().unwrap());
                     }
-                    call_traces.set_outputs(outputs);
+                    call_traces.set_outputs(outputs.into_iter().enumerate().map(|(_, o)| {o.to_string()}).collect());
 
                     if let Some(frame) = self.call_stack.pop() {
                         // Note: the caller will find the callee's return values at the top of the shared operand stack
@@ -402,11 +403,11 @@ impl Interpreter {
                     for val in self.operand_stack.last_n(func.arg_count()).unwrap() {
                         inputs.push((*val).copy_value().unwrap());
                     }
-                    call_traces.push(CallTrace {
+                    call_traces.push(InternalCallTrace {
                         pc: 0,
                         module_id: "".to_string(),
                         func_name: func.name().to_string(),
-                        inputs,
+                        inputs: inputs.into_iter().enumerate().map(|(_, i)| i.to_string()).collect(),
                         outputs: vec![],
                         type_args: vec![],
                         sub_traces: vec![],
@@ -469,11 +470,11 @@ impl Interpreter {
                     for val in self.operand_stack.last_n(func.arg_count()).unwrap() {
                         inputs.push((*val).copy_value().unwrap());
                     }
-                    call_traces.push(CallTrace {
+                    call_traces.push(InternalCallTrace {
                         pc: 0,
                         module_id: "".to_string(),
                         func_name: func.name().to_string(),
-                        inputs,
+                        inputs: inputs.into_iter().enumerate().map(|(_, i)| i.to_string()).collect(),
                         outputs: vec![],
                         type_args: vec![],
                         sub_traces: vec![],
