@@ -23,9 +23,9 @@ use move_vm_types::{
     gas::GasMeter,
     loaded_data::runtime_types::{CachedStructIndex, StructType, Type},
     values::{GlobalValue, Value},
-    call_trace::CallTraces,
 };
 use std::{borrow::Borrow, sync::Arc};
+use move_core_types::call_trace::{CallTraces};
 
 pub struct Session<'r, 'l> {
     pub(crate) move_vm: &'l MoveVM,
