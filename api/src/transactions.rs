@@ -68,8 +68,6 @@ type SubmitTransactionsBatchResult<T> =
 
 type SimulateTransactionResult<T> = poem::Result<BasicResponse<T>, SubmitTransactionError>;
 
-type DebugCallTraceResult<T> = poem::Result<BasicResponse<T>, SubmitTransactionError>;
-
 // TODO: Consider making both content types accept either
 // SubmitTransactionRequest or SignedTransaction, the way
 // it is now is quite confusing.
@@ -206,7 +204,7 @@ impl TransactionsApi {
     #[oai(
     path = "/call_trace/by_hash/:txn_hash",
     method = "get",
-    operation_id = "get_transaction_call_trace_by_hash",
+    operation_id = "get_call_trace_by_hash",
     tag = "ApiTags::Transactions"
     )]
     async fn get_transaction_call_trace_by_hash(
@@ -270,14 +268,21 @@ impl TransactionsApi {
                 Ok(CallTraces::new())
             }
             Transaction::UserTransaction(user_transaction) => {
+                // use the previous ledger version where it doesn't take the effect
+                let previous_ledger_version  = user_transaction.info.version.0 - 1;
+                let (requested_ledger_info, _) = self
+                    .context
+                    .get_latest_ledger_info_and_verify_lookup_version(
+                        Some(Version::from(previous_ledger_version)),
+                    )?;
                 let state_view = self
                     .context
-                    .state_view_at_version(Version::from(user_transaction.info.version))
+                    .state_view_at_version(Version::from(previous_ledger_version))
                     .map_err(|err| {
                         BasicErrorWith404::bad_request_with_code(
                             err,
                             AptosErrorCode::InternalError,
-                            &ledger_info,
+                            &requested_ledger_info,
                         )
                     })?;
                 let payload = user_transaction.request.payload;
@@ -294,7 +299,7 @@ impl TransactionsApi {
                                 BasicErrorWith404::bad_request_with_code(
                                     err,
                                     AptosErrorCode::InvalidInput,
-                                    &ledger_info,
+                                    &requested_ledger_info,
                                 )
                             })?;
                         AptosVM::get_call_trace(
