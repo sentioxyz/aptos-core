@@ -405,7 +405,7 @@ impl Interpreter {
                     }
                     call_traces.push(InternalCallTrace {
                         pc: 0,
-                        module_id: "".to_string(),
+                        module_id: module_id.to_string(),
                         func_name: func.name().to_string(),
                         inputs: inputs.into_iter().enumerate().map(|(_, i)| i.to_string()).collect(),
                         outputs: vec![],
@@ -472,7 +472,7 @@ impl Interpreter {
                     }
                     call_traces.push(InternalCallTrace {
                         pc: 0,
-                        module_id: "".to_string(),
+                        module_id: module_id.to_string(),
                         func_name: func.name().to_string(),
                         inputs: inputs.into_iter().enumerate().map(|(_, i)| i.to_string()).collect(),
                         outputs: vec![],
