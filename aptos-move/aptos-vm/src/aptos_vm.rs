@@ -78,7 +78,6 @@ use std::{
     },
 };
 use move_core_types::call_trace::CallTraces;
-// use move_vm_types::call_trace::CallTraces;
 
 static EXECUTION_CONCURRENCY_LEVEL: OnceCell<usize> = OnceCell::new();
 static NUM_EXECUTION_SHARD: OnceCell<usize> = OnceCell::new();
@@ -1407,7 +1406,15 @@ impl AptosVM {
             )));
         let resolver = vm.as_move_resolver(state_view);
         let mut session = vm.new_session(&resolver, SessionId::Void);
-        Ok(session.call_trace(&module_id, &func_name, type_args, arguments, &mut gas_meter).unwrap())
+        let call_trace_res = session.call_trace(&module_id, &func_name, type_args, arguments, &mut gas_meter);
+        match call_trace_res {
+            Ok(call_trace) => {
+                Ok(call_trace)
+            }
+            Err(err) => {
+                Err(anyhow::Error::msg(err.into_vm_status()))
+            }
+        }
     }
 
     pub fn execute_view_function(
