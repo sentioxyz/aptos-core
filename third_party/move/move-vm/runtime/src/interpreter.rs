@@ -26,6 +26,7 @@ use move_vm_types::{
 };
 use std::{cmp::min, collections::VecDeque, fmt::Write, sync::Arc};
 use move_core_types::call_trace::{InternalCallTrace, CallTraces};
+use move_core_types::value::MoveTypeLayout;
 
 macro_rules! debug_write {
     ($($toks: tt)*) => {
@@ -403,11 +404,12 @@ impl Interpreter {
                     for val in self.operand_stack.last_n(func.arg_count()).unwrap() {
                         inputs.push((*val).copy_value().unwrap());
                     }
+                    let typeTags: Vec<MoveTypeLayout> = func.parameter_types().into_iter().enumerate().map(|(_, ty)| loader.type_to_type_layout(ty).unwrap()).collect();
                     call_traces.push(InternalCallTrace {
                         pc: 0,
                         module_id: module_id.to_string(),
                         func_name: func.name().to_string(),
-                        inputs: inputs.into_iter().enumerate().map(|(_, i)| i.to_string()).collect(),
+                        inputs: inputs.iter().zip(typeTags).map(|(v, l)| v.as_move_value(&l).to_string()).collect(),
                         outputs: vec![],
                         type_args: vec![],
                         sub_traces: vec![],
