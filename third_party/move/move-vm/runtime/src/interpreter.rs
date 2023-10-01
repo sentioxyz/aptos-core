@@ -349,7 +349,27 @@ impl Interpreter {
                     for val in self.operand_stack.last_n(current_frame.function.return_type_count()).unwrap() {
                         outputs.push((*val).copy_value().unwrap());
                     }
-                    call_traces.set_outputs(outputs.into_iter().enumerate().map(|(_, o)| {o.to_string()}).collect());
+                    call_traces.set_outputs(
+                        outputs.into_iter().zip(current_frame.function.return_types()).map(|(value, ty)| {
+                            let (ty, value) = match ty {
+                                Type::Reference(inner) | Type::MutableReference(inner) => {
+                                    let ref_value: Reference = value.cast().map_err(|_err| {
+                                        PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR).with_message(
+                                            "non reference value given for a reference typed return value".to_string(),
+                                        )
+                                    })?;
+                                    let inner_value = ref_value.read_ref()?;
+                                    (&**inner, inner_value)
+                                },
+                                _ => (ty, value),
+                            };
+                            let layout = loader.type_to_type_layout(ty).map_err(|_err| {
+                                PartialVMError::new(StatusCode::VERIFICATION_ERROR).with_message(
+                                    "entry point functions cannot have non-serializable return types".to_string(),
+                                )
+                            })?;
+                            Ok(value.as_move_value(&layout).to_string())
+                        }).map(|v: Result<String, PartialVMError>| v.unwrap_or("".to_string())).collect());
 
                     if let Some(frame) = self.call_stack.pop() {
                         // Note: the caller will find the callee's return values at the top of the shared operand stack
@@ -404,12 +424,30 @@ impl Interpreter {
                     for val in self.operand_stack.last_n(func.arg_count()).unwrap() {
                         inputs.push((*val).copy_value().unwrap());
                     }
-                    let typeTags: Vec<MoveTypeLayout> = func.parameter_types().into_iter().enumerate().map(|(_, ty)| loader.type_to_type_layout(ty).unwrap()).collect();
                     call_traces.push(InternalCallTrace {
                         pc: 0,
                         module_id: module_id.to_string(),
                         func_name: func.name().to_string(),
-                        inputs: inputs.iter().zip(typeTags).map(|(v, l)| v.as_move_value(&l).to_string()).collect(),
+                        inputs: inputs.into_iter().zip(func.parameter_types()).map(|(value, ty)| {
+                            let (ty, value) = match ty {
+                                Type::Reference(inner) | Type::MutableReference(inner) => {
+                                    let ref_value: Reference = value.cast().map_err(|_err| {
+                                        PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR).with_message(
+                                            "non reference value given for a reference typed return value".to_string(),
+                                        )
+                                    })?;
+                                    let inner_value = ref_value.read_ref()?;
+                                    (&**inner, inner_value)
+                                },
+                                _ => (ty, value),
+                            };
+                            let layout = loader.type_to_type_layout(ty).map_err(|_err| {
+                                PartialVMError::new(StatusCode::VERIFICATION_ERROR).with_message(
+                                    "entry point functions cannot have non-serializable return types".to_string(),
+                                )
+                            })?;
+                            Ok(value.as_move_value(&layout).to_string())
+                        }).map(|v: Result<String, PartialVMError>| v.unwrap_or("".to_string())).collect(),
                         outputs: vec![],
                         type_args: vec![],
                         sub_traces: vec![],
@@ -476,7 +514,26 @@ impl Interpreter {
                         pc: 0,
                         module_id: module_id.to_string(),
                         func_name: func.name().to_string(),
-                        inputs: inputs.into_iter().enumerate().map(|(_, i)| i.to_string()).collect(),
+                        inputs: inputs.into_iter().zip(func.parameter_types()).map(|(value, ty)| {
+                            let (ty, value) = match ty {
+                                Type::Reference(inner) | Type::MutableReference(inner) => {
+                                    let ref_value: Reference = value.cast().map_err(|_err| {
+                                        PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR).with_message(
+                                            "non reference value given for a reference typed return value".to_string(),
+                                        )
+                                    })?;
+                                    let inner_value = ref_value.read_ref()?;
+                                    (&**inner, inner_value)
+                                },
+                                _ => (ty, value),
+                            };
+                            let layout = loader.type_to_type_layout(ty).map_err(|_err| {
+                                PartialVMError::new(StatusCode::VERIFICATION_ERROR).with_message(
+                                    "entry point functions cannot have non-serializable return types".to_string(),
+                                )
+                            })?;
+                            Ok(value.as_move_value(&layout).to_string())
+                        }).map(|v: Result<String, PartialVMError>| v.unwrap_or("".to_string())).collect(),
                         outputs: vec![],
                         type_args: vec![],
                         sub_traces: vec![],
