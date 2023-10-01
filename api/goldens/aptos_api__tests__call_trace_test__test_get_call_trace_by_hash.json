@@ -13,10 +13,10 @@
       "module_id": "0000000000000000000000000000000000000000000000000000000000000001::account",
       "func_name": "create_account",
       "inputs": [
-        "Address(34bf7e2d17674feb234371a7ea58efd715f0e56ba20ebf13789480d9d643afaf)"
+        "0x34bf7e2d17674feb234371a7ea58efd715f0e56ba20ebf13789480d9d643afaf"
       ],
       "outputs": [
-        "(container 600003fbec88: [Address(34bf7e2d17674feb234371a7ea58efd715f0e56ba20ebf13789480d9d643afaf)])"
+        "signer(0x34bf7e2d17674feb234371a7ea58efd715f0e56ba20ebf13789480d9d643afaf)"
       ],
       "type_args": [],
       "sub_traces": [
@@ -25,10 +25,10 @@
           "module_id": "0000000000000000000000000000000000000000000000000000000000000001::account",
           "func_name": "create_account_unchecked",
           "inputs": [
-            "Address(34bf7e2d17674feb234371a7ea58efd715f0e56ba20ebf13789480d9d643afaf)"
+            "0x34bf7e2d17674feb234371a7ea58efd715f0e56ba20ebf13789480d9d643afaf"
           ],
           "outputs": [
-            "(container 600003fbec88: [Address(34bf7e2d17674feb234371a7ea58efd715f0e56ba20ebf13789480d9d643afaf)])"
+            "signer(0x34bf7e2d17674feb234371a7ea58efd715f0e56ba20ebf13789480d9d643afaf)"
           ],
           "type_args": [],
           "sub_traces": [
@@ -37,11 +37,11 @@
               "module_id": "0000000000000000000000000000000000000000000000000000000000000001::guid",
               "func_name": "create",
               "inputs": [
-                "Address(34bf7e2d17674feb234371a7ea58efd715f0e56ba20ebf13789480d9d643afaf)",
-                "(&container 600003fd1bd8)[3]"
+                "0x34bf7e2d17674feb234371a7ea58efd715f0e56ba20ebf13789480d9d643afaf",
+                "0u64"
               ],
               "outputs": [
-                "(container 600003fd1b78: [(container 600003fd1848: [U64(0), Address(34bf7e2d17674feb234371a7ea58efd715f0e56ba20ebf13789480d9d643afaf)])])"
+                "struct[struct[0u64, 0x34bf7e2d17674feb234371a7ea58efd715f0e56ba20ebf13789480d9d643afaf]]"
               ],
               "type_args": [],
               "sub_traces": []
@@ -51,10 +51,10 @@
               "module_id": "0000000000000000000000000000000000000000000000000000000000000001::event",
               "func_name": "new_event_handle",
               "inputs": [
-                "(container 600003fd1a28: [(container 600003fd1ab8: [U64(0), Address(34bf7e2d17674feb234371a7ea58efd715f0e56ba20ebf13789480d9d643afaf)])])"
+                "struct[struct[0u64, 0x34bf7e2d17674feb234371a7ea58efd715f0e56ba20ebf13789480d9d643afaf]]"
               ],
               "outputs": [
-                "(container 600003fd1f68: [U64(0), (container 600003fd18d8: [(container 600003fd1848: [U64(0), Address(34bf7e2d17674feb234371a7ea58efd715f0e56ba20ebf13789480d9d643afaf)])])])"
+                "struct[0u64, struct[struct[0u64, 0x34bf7e2d17674feb234371a7ea58efd715f0e56ba20ebf13789480d9d643afaf]]]"
               ],
               "type_args": [],
               "sub_traces": []
@@ -64,11 +64,11 @@
               "module_id": "0000000000000000000000000000000000000000000000000000000000000001::guid",
               "func_name": "create",
               "inputs": [
-                "Address(34bf7e2d17674feb234371a7ea58efd715f0e56ba20ebf13789480d9d643afaf)",
-                "(&container 600003fd1bd8)[3]"
+                "0x34bf7e2d17674feb234371a7ea58efd715f0e56ba20ebf13789480d9d643afaf",
+                "1u64"
               ],
               "outputs": [
-                "(container 600003fd1e48: [(container 600003fd1ea8: [U64(1), Address(34bf7e2d17674feb234371a7ea58efd715f0e56ba20ebf13789480d9d643afaf)])])"
+                "struct[struct[1u64, 0x34bf7e2d17674feb234371a7ea58efd715f0e56ba20ebf13789480d9d643afaf]]"
               ],
               "type_args": [],
               "sub_traces": []
@@ -78,21 +78,10 @@
               "module_id": "0000000000000000000000000000000000000000000000000000000000000001::event",
               "func_name": "new_event_handle",
               "inputs": [
-                "(container 600003fd18d8: [(container 600003fd1ab8: [U64(1), Address(34bf7e2d17674feb234371a7ea58efd715f0e56ba20ebf13789480d9d643afaf)])])"
+                "struct[struct[1u64, 0x34bf7e2d17674feb234371a7ea58efd715f0e56ba20ebf13789480d9d643afaf]]"
               ],
               "outputs": [
-                "(container 600003fd1d88: [U64(0), (container 600003fd1de8: [(container 600003fd1ea8: [U64(1), Address(34bf7e2d17674feb234371a7ea58efd715f0e56ba20ebf13789480d9d643afaf)])])])"
-              ],
-              "type_args": [],
-              "sub_traces": []
-            },
-            {
-              "pc": 0,
-              "module_id": "0000000000000000000000000000000000000000000000000000000000000001::option",
-              "func_name": "none",
-              "inputs": [],
-              "outputs": [
-                "(container 600003fbf978: [(container 600003fbf6d8: [])])"
+                "struct[0u64, struct[struct[1u64, 0x34bf7e2d17674feb234371a7ea58efd715f0e56ba20ebf13789480d9d643afaf]]]"
               ],
               "type_args": [],
               "sub_traces": []
@@ -103,7 +92,18 @@
               "func_name": "none",
               "inputs": [],
               "outputs": [
-                "(container 600003fbc978: [(container 600003fbc948: [])])"
+                ""
+              ],
+              "type_args": [],
+              "sub_traces": []
+            },
+            {
+              "pc": 0,
+              "module_id": "0000000000000000000000000000000000000000000000000000000000000001::option",
+              "func_name": "none",
+              "inputs": [],
+              "outputs": [
+                ""
               ],
               "type_args": [],
               "sub_traces": []
@@ -117,7 +117,7 @@
       "module_id": "0000000000000000000000000000000000000000000000000000000000000001::coin",
       "func_name": "register",
       "inputs": [
-        "(&container 600003fd1f98)"
+        "signer(0x34bf7e2d17674feb234371a7ea58efd715f0e56ba20ebf13789480d9d643afaf)"
       ],
       "outputs": [],
       "type_args": [],
@@ -127,10 +127,10 @@
           "module_id": "0000000000000000000000000000000000000000000000000000000000000001::signer",
           "func_name": "address_of",
           "inputs": [
-            "(&container 600003fd1f98)"
+            "signer(0x34bf7e2d17674feb234371a7ea58efd715f0e56ba20ebf13789480d9d643afaf)"
           ],
           "outputs": [
-            "Address(34bf7e2d17674feb234371a7ea58efd715f0e56ba20ebf13789480d9d643afaf)"
+            "0x34bf7e2d17674feb234371a7ea58efd715f0e56ba20ebf13789480d9d643afaf"
           ],
           "type_args": [],
           "sub_traces": []
@@ -140,7 +140,7 @@
           "module_id": "0000000000000000000000000000000000000000000000000000000000000001::coin",
           "func_name": "is_account_registered",
           "inputs": [
-            "Address(34bf7e2d17674feb234371a7ea58efd715f0e56ba20ebf13789480d9d643afaf)"
+            "0x34bf7e2d17674feb234371a7ea58efd715f0e56ba20ebf13789480d9d643afaf"
           ],
           "outputs": [
             "false"
@@ -153,7 +153,7 @@
           "module_id": "0000000000000000000000000000000000000000000000000000000000000001::account",
           "func_name": "register_coin",
           "inputs": [
-            "Address(34bf7e2d17674feb234371a7ea58efd715f0e56ba20ebf13789480d9d643afaf)"
+            "0x34bf7e2d17674feb234371a7ea58efd715f0e56ba20ebf13789480d9d643afaf"
           ],
           "outputs": [],
           "type_args": [],
@@ -163,8 +163,8 @@
               "module_id": "0000000000000000000000000000000000000000000000000000000000000001::event",
               "func_name": "emit_event",
               "inputs": [
-                "(&container 600003fd1b78)",
-                "(container 600003fbfb88: [(container 600003fbf588: [Address(1), (container 600003fbee38: [97, 112, 116, 111, 115, 95, 99, 111, 105, 110]), (container 600003fbe8f8: [65, 112, 116, 111, 115, 67, 111, 105, 110])])])"
+                "struct[0u64, struct[struct[0u64, 0x34bf7e2d17674feb234371a7ea58efd715f0e56ba20ebf13789480d9d643afaf]]]",
+                ""
               ],
               "outputs": [],
               "type_args": [],
@@ -177,10 +177,10 @@
           "module_id": "0000000000000000000000000000000000000000000000000000000000000001::account",
           "func_name": "new_event_handle",
           "inputs": [
-            "(&container 600003fd1f98)"
+            "signer(0x34bf7e2d17674feb234371a7ea58efd715f0e56ba20ebf13789480d9d643afaf)"
           ],
           "outputs": [
-            "(container 600003fbe808: [U64(0), (container 600003fbeb68: [(container 600003fbeb38: [U64(2), Address(34bf7e2d17674feb234371a7ea58efd715f0e56ba20ebf13789480d9d643afaf)])])])"
+            "struct[0u64, struct[struct[2u64, 0x34bf7e2d17674feb234371a7ea58efd715f0e56ba20ebf13789480d9d643afaf]]]"
           ],
           "type_args": [],
           "sub_traces": [
@@ -189,10 +189,10 @@
               "module_id": "0000000000000000000000000000000000000000000000000000000000000001::account",
               "func_name": "create_guid",
               "inputs": [
-                "(&container 600003fd1f98)"
+                "signer(0x34bf7e2d17674feb234371a7ea58efd715f0e56ba20ebf13789480d9d643afaf)"
               ],
               "outputs": [
-                "(container 600003fbea48: [(container 600003fbee38: [U64(2), Address(34bf7e2d17674feb234371a7ea58efd715f0e56ba20ebf13789480d9d643afaf)])])"
+                "struct[struct[2u64, 0x34bf7e2d17674feb234371a7ea58efd715f0e56ba20ebf13789480d9d643afaf]]"
               ],
               "type_args": [],
               "sub_traces": [
@@ -201,10 +201,10 @@
                   "module_id": "0000000000000000000000000000000000000000000000000000000000000001::signer",
                   "func_name": "address_of",
                   "inputs": [
-                    "(&container 600003fd1f98)"
+                    "signer(0x34bf7e2d17674feb234371a7ea58efd715f0e56ba20ebf13789480d9d643afaf)"
                   ],
                   "outputs": [
-                    "Address(34bf7e2d17674feb234371a7ea58efd715f0e56ba20ebf13789480d9d643afaf)"
+                    "0x34bf7e2d17674feb234371a7ea58efd715f0e56ba20ebf13789480d9d643afaf"
                   ],
                   "type_args": [],
                   "sub_traces": []
@@ -214,11 +214,11 @@
                   "module_id": "0000000000000000000000000000000000000000000000000000000000000001::guid",
                   "func_name": "create",
                   "inputs": [
-                    "Address(34bf7e2d17674feb234371a7ea58efd715f0e56ba20ebf13789480d9d643afaf)",
-                    "(&container 600003fbc948)[2]"
+                    "0x34bf7e2d17674feb234371a7ea58efd715f0e56ba20ebf13789480d9d643afaf",
+                    "2u64"
                   ],
                   "outputs": [
-                    "(container 600003fbe808: [(container 600003fbeef8: [U64(2), Address(34bf7e2d17674feb234371a7ea58efd715f0e56ba20ebf13789480d9d643afaf)])])"
+                    "struct[struct[2u64, 0x34bf7e2d17674feb234371a7ea58efd715f0e56ba20ebf13789480d9d643afaf]]"
                   ],
                   "type_args": [],
                   "sub_traces": []
@@ -230,10 +230,10 @@
               "module_id": "0000000000000000000000000000000000000000000000000000000000000001::event",
               "func_name": "new_event_handle",
               "inputs": [
-                "(container 600003fbeb68: [(container 600003fbeb38: [U64(2), Address(34bf7e2d17674feb234371a7ea58efd715f0e56ba20ebf13789480d9d643afaf)])])"
+                "struct[struct[2u64, 0x34bf7e2d17674feb234371a7ea58efd715f0e56ba20ebf13789480d9d643afaf]]"
               ],
               "outputs": [
-                "(container 600003fbe808: [U64(0), (container 600003fbee38: [(container 600003fbea48: [U64(2), Address(34bf7e2d17674feb234371a7ea58efd715f0e56ba20ebf13789480d9d643afaf)])])])"
+                "struct[0u64, struct[struct[2u64, 0x34bf7e2d17674feb234371a7ea58efd715f0e56ba20ebf13789480d9d643afaf]]]"
               ],
               "type_args": [],
               "sub_traces": []
@@ -245,10 +245,10 @@
           "module_id": "0000000000000000000000000000000000000000000000000000000000000001::account",
           "func_name": "new_event_handle",
           "inputs": [
-            "(&container 600003fd1f98)"
+            "signer(0x34bf7e2d17674feb234371a7ea58efd715f0e56ba20ebf13789480d9d643afaf)"
           ],
           "outputs": [
-            "(container 600003fbec28: [U64(0), (container 600003fbeb68: [(container 600003fbea48: [U64(3), Address(34bf7e2d17674feb234371a7ea58efd715f0e56ba20ebf13789480d9d643afaf)])])])"
+            "struct[0u64, struct[struct[3u64, 0x34bf7e2d17674feb234371a7ea58efd715f0e56ba20ebf13789480d9d643afaf]]]"
           ],
           "type_args": [],
           "sub_traces": [
@@ -257,10 +257,10 @@
               "module_id": "0000000000000000000000000000000000000000000000000000000000000001::account",
               "func_name": "create_guid",
               "inputs": [
-                "(&container 600003fd1f98)"
+                "signer(0x34bf7e2d17674feb234371a7ea58efd715f0e56ba20ebf13789480d9d643afaf)"
               ],
               "outputs": [
-                "(container 600003fbeef8: [(container 600003fbe508: [U64(3), Address(34bf7e2d17674feb234371a7ea58efd715f0e56ba20ebf13789480d9d643afaf)])])"
+                "struct[struct[3u64, 0x34bf7e2d17674feb234371a7ea58efd715f0e56ba20ebf13789480d9d643afaf]]"
               ],
               "type_args": [],
               "sub_traces": [
@@ -269,10 +269,10 @@
                   "module_id": "0000000000000000000000000000000000000000000000000000000000000001::signer",
                   "func_name": "address_of",
                   "inputs": [
-                    "(&container 600003fd1f98)"
+                    "signer(0x34bf7e2d17674feb234371a7ea58efd715f0e56ba20ebf13789480d9d643afaf)"
                   ],
                   "outputs": [
-                    "Address(34bf7e2d17674feb234371a7ea58efd715f0e56ba20ebf13789480d9d643afaf)"
+                    "0x34bf7e2d17674feb234371a7ea58efd715f0e56ba20ebf13789480d9d643afaf"
                   ],
                   "type_args": [],
                   "sub_traces": []
@@ -282,11 +282,11 @@
                   "module_id": "0000000000000000000000000000000000000000000000000000000000000001::guid",
                   "func_name": "create",
                   "inputs": [
-                    "Address(34bf7e2d17674feb234371a7ea58efd715f0e56ba20ebf13789480d9d643afaf)",
-                    "(&container 600003fbc948)[2]"
+                    "0x34bf7e2d17674feb234371a7ea58efd715f0e56ba20ebf13789480d9d643afaf",
+                    "3u64"
                   ],
                   "outputs": [
-                    "(container 600003fbec28: [(container 600003fbeb98: [U64(3), Address(34bf7e2d17674feb234371a7ea58efd715f0e56ba20ebf13789480d9d643afaf)])])"
+                    "struct[struct[3u64, 0x34bf7e2d17674feb234371a7ea58efd715f0e56ba20ebf13789480d9d643afaf]]"
                   ],
                   "type_args": [],
                   "sub_traces": []
@@ -298,10 +298,10 @@
               "module_id": "0000000000000000000000000000000000000000000000000000000000000001::event",
               "func_name": "new_event_handle",
               "inputs": [
-                "(container 600003fbeb68: [(container 600003fbea48: [U64(3), Address(34bf7e2d17674feb234371a7ea58efd715f0e56ba20ebf13789480d9d643afaf)])])"
+                "struct[struct[3u64, 0x34bf7e2d17674feb234371a7ea58efd715f0e56ba20ebf13789480d9d643afaf]]"
               ],
               "outputs": [
-                "(container 600003fbec28: [U64(0), (container 600003fbe508: [(container 600003fbeef8: [U64(3), Address(34bf7e2d17674feb234371a7ea58efd715f0e56ba20ebf13789480d9d643afaf)])])])"
+                "struct[0u64, struct[struct[3u64, 0x34bf7e2d17674feb234371a7ea58efd715f0e56ba20ebf13789480d9d643afaf]]]"
               ],
               "type_args": [],
               "sub_traces": []
