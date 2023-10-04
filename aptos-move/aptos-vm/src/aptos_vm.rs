@@ -34,7 +34,7 @@ use aptos_types::{
     block_executor::partitioner::PartitionedTransactions,
     block_metadata::BlockMetadata,
     fee_statement::FeeStatement,
-    on_chain_config::{new_epoch_event_key, ConfigStorage, FeatureFlag, TimedFeatureOverride},
+    on_chain_config::{new_epoch_event_key, FeatureFlag, TimedFeatureOverride},
     transaction::{
         EntryFunction, ExecutionError, ExecutionStatus, ModuleBundle, Multisig,
         MultisigTransactionPayload, SignatureCheckedTransaction, SignedTransaction, Transaction,
@@ -119,8 +119,8 @@ macro_rules! unwrap_or_discard {
 }
 
 impl AptosVM {
-    pub fn new(config_storage: &impl ConfigStorage) -> Self {
-        Self(AptosVMImpl::new(config_storage))
+    pub fn new(resolver: &impl AptosMoveResolver) -> Self {
+        Self(AptosVMImpl::new(resolver))
     }
 
     pub fn new_from_executor_view(executor_view: &impl ExecutorView) -> Self {
@@ -1632,6 +1632,17 @@ impl VMValidator for AptosVM {
     ) -> VMValidatorResult {
         let _timer = TXN_VALIDATION_SECONDS.start_timer();
         let log_context = AdapterLogSchema::new(state_view.id(), 0);
+
+        if !self
+            .0
+            .get_features()
+            .is_enabled(FeatureFlag::SECP256K1_ECDSA_AUTHENTICATOR)
+        {
+            if let aptos_types::transaction::authenticator::TransactionAuthenticator::Secp256k1Ecdsa{ .. } = transaction.authenticator_ref() {
+                return VMValidatorResult::error(StatusCode::FEATURE_UNDER_GATING);
+            }
+        }
+
         let txn = match Self::check_signature(transaction) {
             Ok(t) => t,
             _ => {

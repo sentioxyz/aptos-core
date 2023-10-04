@@ -184,7 +184,7 @@ impl From<hex::FromHexError> for CliError {
 
 impl From<anyhow::Error> for CliError {
     fn from(e: anyhow::Error) -> Self {
-        CliError::UnexpectedError(e.to_string())
+        CliError::UnexpectedError(format!("{:#}", e))
     }
 }
 
@@ -999,7 +999,7 @@ pub fn account_address_from_public_key(public_key: &Ed25519PublicKey) -> Account
 }
 
 pub fn account_address_from_auth_key(auth_key: &AuthenticationKey) -> AccountAddress {
-    AccountAddress::new(*auth_key.derived_address())
+    AccountAddress::new(*auth_key.account_address())
 }
 
 #[derive(Debug, Parser)]
@@ -1125,6 +1125,12 @@ pub struct MovePackageDir {
     /// Do not complain about unknown attributes in Move code.
     #[clap(long)]
     pub skip_attribute_checks: bool,
+
+    /// Do apply extended checks for Aptos (e.g. `#[view]` attribute) also on test code.
+    /// NOTE: this behavior will become the default in the future.
+    /// See https://github.com/aptos-labs/aptos-core/issues/10335
+    #[clap(long, env = "APTOS_CHECK_TEST_CODE")]
+    pub check_test_code: bool,
 }
 
 impl MovePackageDir {
@@ -1138,6 +1144,7 @@ impl MovePackageDir {
             bytecode_version: None,
             compiler_version: None,
             skip_attribute_checks: false,
+            check_test_code: false,
         }
     }
 

@@ -9,7 +9,7 @@ use crate::dag::{
 use anyhow::{anyhow, ensure};
 use aptos_consensus_types::common::{Author, Round};
 use aptos_crypto::HashValue;
-use aptos_logger::error;
+use aptos_logger::{debug, error};
 use aptos_types::{epoch_state::EpochState, validator_verifier::ValidatorVerifier};
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
@@ -43,16 +43,14 @@ pub struct Dag {
     storage: Arc<dyn DAGStorage>,
     initial_round: Round,
     epoch_state: Arc<EpochState>,
-
-    highest_committed_anchor_round: Round,
 }
 
 impl Dag {
     pub fn new(
         epoch_state: Arc<EpochState>,
         storage: Arc<dyn DAGStorage>,
-        highest_committed_anchor_round: Round,
-        dag_window_size_config: usize,
+        initial_round: Round,
+        _dag_window_size_config: usize,
     ) -> Self {
         let epoch = epoch_state.epoch;
         let author_to_index = epoch_state.verifier.address_to_validator_index().clone();
@@ -61,12 +59,14 @@ impl Dag {
         let mut expired = vec![];
         let mut nodes_by_round = BTreeMap::new();
         for (digest, certified_node) in all_nodes {
-            if certified_node.metadata().epoch() == epoch {
+            if certified_node.metadata().epoch() == epoch && certified_node.round() >= initial_round
+            {
                 let arc_node = Arc::new(certified_node);
                 let index = *author_to_index
                     .get(arc_node.metadata().author())
                     .expect("Author from certified node should exist");
                 let round = arc_node.metadata().round();
+                debug!("Recovered node {} from storage", arc_node.id());
                 nodes_by_round
                     .entry(round)
                     .or_insert_with(|| vec![None; num_validators])[index] =
@@ -78,18 +78,12 @@ impl Dag {
         if let Err(e) = storage.delete_certified_nodes(expired) {
             error!("Error deleting expired nodes: {:?}", e);
         }
-        let initial_round = if highest_committed_anchor_round <= dag_window_size_config as Round {
-            1
-        } else {
-            highest_committed_anchor_round.saturating_sub(dag_window_size_config as Round)
-        };
         Self {
             nodes_by_round,
             author_to_index,
             storage,
             initial_round,
             epoch_state,
-            highest_committed_anchor_round,
         }
     }
 
@@ -97,7 +91,6 @@ impl Dag {
         epoch_state: Arc<EpochState>,
         storage: Arc<dyn DAGStorage>,
         initial_round: Round,
-        highest_committed_anchor_round: Round,
     ) -> Self {
         let author_to_index = epoch_state.verifier.address_to_validator_index().clone();
         let nodes_by_round = BTreeMap::new();
@@ -107,7 +100,6 @@ impl Dag {
             storage,
             initial_round,
             epoch_state,
-            highest_committed_anchor_round,
         }
     }
 
@@ -150,6 +142,7 @@ impl Dag {
 
         // mutate after all checks pass
         self.storage.save_certified_node(&node)?;
+        debug!("Added node {}", node.id());
         round_ref[index] = Some(NodeStatus::Unordered(node.clone()));
         Ok(())
     }
@@ -235,7 +228,7 @@ impl Dag {
     }
 
     fn reachable_filter(start: Vec<HashValue>) -> impl FnMut(&Arc<CertifiedNode>) -> bool {
-        let mut reachable: HashSet<HashValue> = HashSet::from_iter(start.into_iter());
+        let mut reachable: HashSet<HashValue> = HashSet::from_iter(start);
         move |node| {
             if reachable.contains(&node.digest()) {
                 for parent in node.parents() {
@@ -330,7 +323,7 @@ impl Dag {
 
         let bitmask = self
             .nodes_by_round
-            .range(lowest_round..target_round)
+            .range(lowest_round..=target_round)
             .map(|(_, round_nodes)| round_nodes.iter().map(|node| node.is_some()).collect())
             .collect();
 
@@ -363,9 +356,5 @@ impl Dag {
             }
         }
         None
-    }
-
-    pub(super) fn highest_committed_anchor_round(&self) -> Round {
-        self.highest_committed_anchor_round
     }
 }
