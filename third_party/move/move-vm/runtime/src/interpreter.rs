@@ -319,7 +319,9 @@ impl Interpreter {
             inputs: args_1.into_iter().enumerate().map(|(_, i)| i.to_string()).collect(),
             outputs: vec![],
             // TODO(pcxu): add type args
-            type_args: vec![],
+            type_args: current_frame.ty_args().into_iter().map(|ty| {
+                loader.type_to_type_tag(ty).unwrap().to_string()
+            }).collect(),
             sub_traces: vec![],
         }).map_err(|_e| {
             let err = PartialVMError::new(StatusCode::ABORTED);
@@ -449,7 +451,9 @@ impl Interpreter {
                             Ok(value.as_move_value(&layout).to_string())
                         }).map(|v: Result<String, PartialVMError>| v.unwrap_or("".to_string())).collect(),
                         outputs: vec![],
-                        type_args: vec![],
+                        type_args: current_frame.ty_args().into_iter().map(|ty| {
+                            loader.type_to_type_tag(ty).unwrap().to_string()
+                        }).collect(),
                         sub_traces: vec![],
                     }).map_err(|_e| {
                         let err = PartialVMError::new(StatusCode::ABORTED);
@@ -535,7 +539,9 @@ impl Interpreter {
                             Ok(value.as_move_value(&layout).to_string())
                         }).map(|v: Result<String, PartialVMError>| v.unwrap_or("".to_string())).collect(),
                         outputs: vec![],
-                        type_args: vec![],
+                        type_args: current_frame.ty_args().into_iter().map(|ty| {
+                            loader.type_to_type_tag(ty).unwrap().to_string()
+                        }).collect(),
                         sub_traces: vec![],
                     }).map_err(|_e| {
                         let err = PartialVMError::new(StatusCode::ABORTED);
