@@ -26,7 +26,6 @@ use move_vm_types::{
 };
 use std::{cmp::min, collections::VecDeque, fmt::Write, sync::Arc};
 use move_core_types::call_trace::{InternalCallTrace, CallTraces};
-use move_core_types::value::MoveTypeLayout;
 
 macro_rules! debug_write {
     ($($toks: tt)*) => {
