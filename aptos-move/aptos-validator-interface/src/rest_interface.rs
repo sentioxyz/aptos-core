@@ -3,7 +3,7 @@
 
 use crate::AptosValidatorInterface;
 use anyhow::{anyhow, Result};
-use aptos_api_types::{AptosError, AptosErrorCode};
+use aptos_api_types::{AptosError, AptosErrorCode, HashValue};
 use aptos_rest_client::{
     error::{AptosErrorResponse, RestError},
     Client,
@@ -90,6 +90,10 @@ impl AptosValidatorInterface for RestDebuggerInterface {
         }
 
         Ok((txns, txn_infos))
+    }
+
+    async fn get_transaction_by_hash(&self, hash: String) -> Result<Transaction> {
+        self.0.get_transaction_by_hash(hash, )
     }
 
     async fn get_latest_version(&self) -> Result<Version> {

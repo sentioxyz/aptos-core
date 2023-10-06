@@ -3266,6 +3266,36 @@ dependencies = [
 ]
 
 [[package]]
+name = "aptos-tracer"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "aptos-crypto",
+ "aptos-gas",
+ "aptos-gas-profiling",
+ "aptos-logger",
+ "aptos-resource-viewer",
+ "aptos-rest-client",
+ "aptos-state-view",
+ "aptos-types",
+ "aptos-validator-interface",
+ "aptos-vm",
+ "aptos-vm-logging",
+ "aptos-vm-types",
+ "clap 4.3.5",
+ "move-binary-format",
+ "move-cli",
+ "move-compiler",
+ "move-core-types",
+ "move-resource-viewer",
+ "move-table-extension",
+ "move-vm-runtime",
+ "move-vm-test-utils",
+ "tokio",
+ "url",
+]
+
+[[package]]
 name = "aptos-transaction-benchmarks"
 version = "0.1.0"
 dependencies = [

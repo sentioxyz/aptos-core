@@ -46,6 +46,11 @@ pub trait AptosValidatorInterface: Sync {
         limit: u64,
     ) -> Result<(Vec<Transaction>, Vec<TransactionInfo>)>;
 
+    async fn get_transaction_by_hash(
+        &self,
+        hash: String,
+    ) -> Result<Transaction>;
+
     async fn get_latest_version(&self) -> Result<Version>;
 
     async fn get_version_by_account_sequence(
