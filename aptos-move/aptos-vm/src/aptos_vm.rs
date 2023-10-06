@@ -1408,24 +1408,24 @@ impl AptosVM {
     }
 
     pub fn get_call_trace(
-        executor_view: &impl ExecutorView,
+        state_view: &impl StateView,
         module_id: ModuleId,
         func_name: Identifier,
         type_args: Vec<TypeTag>,
         arguments: Vec<Vec<u8>>,
         gas_budget: u64,
     ) -> Result<CallTraces> {
-        let vm = AptosVM::new_from_executor_view(executor_view);
-        let log_context = AdapterLogSchema::new(executor_view.id(), 0);
+        let vm = AptosVM::new(state_view);
+        let log_context = AdapterLogSchema::new(state_view.id(), 0);
         let mut gas_meter =
-            MemoryTrackedGasMeter::new(StandardGasMeter::new(StandardGasAlgebra::new(
+            StandardGasMeter::new(
                 vm.0.get_gas_feature_version(),
-                vm.0.get_gas_parameters(&log_context)?.vm.clone(),
+                vm.0.get_gas_parameters(&log_context)?.clone(),
                 vm.0.get_storage_gas_parameters(&log_context)?.clone(),
                 gas_budget,
-            )));
-        let resolver = vm.as_move_resolver(executor_view);
-        let mut session = vm.new_session(&resolver, SessionId::Void);
+            );
+        let resolver = vm.as_move_resolver(state_view);
+        let mut session = vm.new_session(&resolver, SessionId::Void, true);
         let call_trace_res = session.call_trace(&module_id, &func_name, type_args, arguments, &mut gas_meter);
         match call_trace_res {
             Ok(call_trace) => {

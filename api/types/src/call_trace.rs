@@ -1,4 +1,4 @@
-use poem_openapi_derive::Object;
+use poem_openapi::Object;
 use serde::{Deserialize, Serialize};
 use move_core_types::call_trace::InternalCallTrace;
 

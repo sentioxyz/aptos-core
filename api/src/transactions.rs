@@ -303,7 +303,7 @@ impl TransactionsApi {
                                 )
                             })?;
                         AptosVM::get_call_trace(
-                            &state_view.as_executor_view(),
+                            &state_view,
                             entry_func.module().clone(),
                             entry_func.function().to_owned(),
                             entry_func.ty_args().to_owned(),
