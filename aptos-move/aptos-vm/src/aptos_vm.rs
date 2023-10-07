@@ -1393,6 +1393,7 @@ impl AptosVM {
         func_name: Identifier,
         type_args: Vec<TypeTag>,
         arguments: Vec<Vec<u8>>,
+        senders: Vec<AccountAddress>,
         gas_budget: u64,
     ) -> Result<CallTraces> {
         let vm = AptosVM::new(state_view);
@@ -1406,7 +1407,23 @@ impl AptosVM {
             );
         let resolver = vm.as_move_resolver(state_view);
         let mut session = vm.new_session(&resolver, SessionId::Void, true);
-        let call_trace_res = session.call_trace(&module_id, &func_name, type_args, arguments, &mut gas_meter);
+        let function = session.load_function(
+            &module_id,
+            &func_name,
+            &type_args,
+        )?;
+        let struct_constructors = vm
+            .0
+            .get_features()
+            .is_enabled(FeatureFlag::STRUCT_CONSTRUCTORS);
+        let args = verifier::transaction_arg_validation::validate_combine_signer_and_txn_args(
+            &mut session,
+            senders,
+            arguments,
+            &function,
+            struct_constructors,
+        )?;
+        let call_trace_res = session.call_trace(&module_id, &func_name, type_args, args, &mut gas_meter);
         match call_trace_res {
             Ok(call_trace) => {
                 Ok(call_trace)

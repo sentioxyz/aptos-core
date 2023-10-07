@@ -509,6 +509,7 @@ impl VMRuntime {
         extensions: &mut NativeContextExtensions,
         bypass_declared_entry_check: bool,
     ) -> VMResult<CallTraces> {
+        let module_id = module;
         // load the function
         let (module, function, function_instantiation) =
             self.loader
@@ -558,6 +559,7 @@ impl VMRuntime {
             .map_err(|e| e.finish(Location::Undefined))?;
 
         Interpreter::call_trace(
+            module_id,
             function,
             type_arguments,
             deserialized_args,

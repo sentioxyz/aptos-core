@@ -23,6 +23,7 @@ use lru::LruCache;
 use move_binary_format::file_format::CompiledModule;
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
+use aptos_api_types::TransactionOnChainData;
 
 // TODO(skedia) Clean up this interfact to remove account specific logic and move to state store
 // key-value interface with fine grained storage project
@@ -49,7 +50,7 @@ pub trait AptosValidatorInterface: Sync {
     async fn get_transaction_by_hash(
         &self,
         hash: String,
-    ) -> Result<Transaction>;
+    ) -> Result<TransactionOnChainData>;
 
     async fn get_latest_version(&self) -> Result<Version>;
 

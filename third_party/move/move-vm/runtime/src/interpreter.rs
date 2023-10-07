@@ -26,6 +26,7 @@ use move_vm_types::{
 };
 use std::{cmp::min, collections::VecDeque, fmt::Write, sync::Arc};
 use move_core_types::call_trace::{InternalCallTrace, CallTraces};
+use move_core_types::language_storage::ModuleId;
 
 macro_rules! debug_write {
     ($($toks: tt)*) => {
@@ -99,6 +100,7 @@ impl Interpreter {
     }
 
     pub(crate) fn call_trace(
+        module: &ModuleId,
         function: Arc<Function>,
         ty_args: Vec<Type>,
         args: Vec<Value>,
@@ -113,7 +115,7 @@ impl Interpreter {
             paranoid_type_checks: loader.vm_config().paranoid_type_checks,
         };
         interpreter.call_trace_internal(
-            loader, data_store, gas_meter, extensions, function, ty_args, args,
+            module, loader, data_store, gas_meter, extensions, function, ty_args, args,
         )
     }
 
@@ -284,6 +286,7 @@ impl Interpreter {
 
     fn call_trace_internal(
         mut self,
+        module: &ModuleId,
         loader: &Loader,
         data_store: &mut TransactionDataCache,
         gas_meter: &mut impl GasMeter,
@@ -307,15 +310,33 @@ impl Interpreter {
                 .map_err(|e| self.set_location(e))?;
             args_1.push(value);
         }
-
         let mut current_frame = self
             .make_new_frame(loader, function, ty_args, locals)
             .map_err(|err| self.set_location(err))?;
         call_traces.push(InternalCallTrace {
             pc: current_frame.pc,
-            module_id: "".to_string(),
+            module_id: module.to_string(),
             func_name: current_frame.function.name().to_string(),
-            inputs: args_1.into_iter().enumerate().map(|(_, i)| i.to_string()).collect(),
+            inputs: args_1.into_iter().zip(current_frame.function.parameter_types()).map(|(value, ty)| {
+                let (ty, value) = match ty {
+                    Type::Reference(inner) | Type::MutableReference(inner) => {
+                        let ref_value: Reference = value.cast().map_err(|_err| {
+                            PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR).with_message(
+                                "non reference value given for a reference typed return value".to_string(),
+                            )
+                        })?;
+                        let inner_value = ref_value.read_ref()?;
+                        (&**inner, inner_value)
+                    },
+                    _ => (ty, value),
+                };
+                let layout = loader.type_to_type_layout(ty).map_err(|_err| {
+                    PartialVMError::new(StatusCode::VERIFICATION_ERROR).with_message(
+                        "entry point functions cannot have non-serializable return types".to_string(),
+                    )
+                })?;
+                Ok(value.as_move_value(&layout).to_string())
+            }).map(|v: Result<String, PartialVMError>| v.unwrap_or("".to_string())).collect(),
             outputs: vec![],
             // TODO(pcxu): add type args
             type_args: current_frame.ty_args().into_iter().map(|ty| {
