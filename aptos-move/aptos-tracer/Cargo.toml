@@ -30,3 +30,6 @@ move-vm-runtime = { workspace = true }
 move-vm-test-utils = { workspace = true }
 tokio = { workspace = true }
 url = { workspace = true }
+poem = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
