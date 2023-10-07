@@ -3606,6 +3606,9 @@ dependencies = [
  "move-table-extension",
  "move-vm-runtime",
  "move-vm-test-utils",
+ "poem",
+ "serde 1.0.149",
+ "serde_json",
  "tokio",
  "url",
 ]

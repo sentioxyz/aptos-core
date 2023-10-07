@@ -1,6 +1,12 @@
 // Copyright © Aptos Foundation
 // SPDX-License-Identifier: Apache-2.0
 
+mod config;
+mod server;
+
+pub use server::run_debugger_server;
+pub use config::DebuggerServerConfig;
+
 use anyhow::{anyhow, Result};
 use aptos_rest_client::{Client};
 use aptos_types::{
