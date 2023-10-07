@@ -3,7 +3,7 @@
 
 use crate::AptosValidatorInterface;
 use anyhow::{anyhow, Result};
-use aptos_api_types::{AptosError, AptosErrorCode, HashValue};
+use aptos_api_types::{AptosError, AptosErrorCode, HashValue, TransactionData, TransactionOnChainData};
 use aptos_rest_client::{
     error::{AptosErrorResponse, RestError},
     Client,
@@ -15,6 +15,7 @@ use aptos_types::{
     transaction::{Transaction, TransactionInfo, Version},
 };
 use std::collections::BTreeMap;
+use std::str::FromStr;
 
 pub struct RestDebuggerInterface(Client);
 
@@ -92,8 +93,30 @@ impl AptosValidatorInterface for RestDebuggerInterface {
         Ok((txns, txn_infos))
     }
 
-    async fn get_transaction_by_hash(&self, hash: String) -> Result<Transaction> {
-        self.0.get_transaction_by_hash(hash, )
+    async fn get_transaction_by_hash(&self, hash: String) -> Result<TransactionOnChainData> {
+        match self.0.get_transaction_by_hash_bcs(HashValue::from_str(hash.as_str()).unwrap().0).await {
+            Ok(resp) => {
+                match resp.into_inner() {
+                    TransactionData::OnChain(data) => {
+                        Ok(data)
+                    }
+                    TransactionData::Pending(_) => {
+                        Err(anyhow!("Transaction is in pending status"))
+                    }
+                }
+            }
+            Err(err) => match err {
+                RestError::Api(AptosErrorResponse {
+                                   error:
+                                   AptosError {
+                                       error_code: AptosErrorCode::StateValueNotFound,
+                                       ..
+                                   },
+                                   ..
+                               }) => Err(anyhow!(err)),
+                _ => Err(anyhow!(err)),
+            },
+        }
     }
 
     async fn get_latest_version(&self) -> Result<Version> {

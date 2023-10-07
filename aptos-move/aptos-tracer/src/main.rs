@@ -21,12 +21,6 @@ pub struct Argument {
     target: Target,
 
     #[clap(long)]
-    begin_version: u64,
-
-    #[clap(long)]
-    limit: u64,
-
-    #[clap(long)]
     txn_hash: String,
 }
 
@@ -45,7 +39,7 @@ async fn main() -> Result<()> {
     println!(
         "{:#?}",
         debugger
-            .trace_transaction(args.begin_version, args.limit, args.txn_hash)
+            .trace_transaction(args.txn_hash)
             .await?
     );
 

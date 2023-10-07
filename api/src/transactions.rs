@@ -308,6 +308,7 @@ impl TransactionsApi {
                             entry_func.function().to_owned(),
                             entry_func.ty_args().to_owned(),
                             entry_func.args().to_owned(),
+                            vec![],
                             self.context.node_config.api.max_gas_view_function,
                         )
                     }

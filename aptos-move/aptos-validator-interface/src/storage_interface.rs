@@ -17,9 +17,7 @@ use aptos_types::{
     transaction::{Transaction, TransactionInfo, Version},
 };
 use std::{path::Path, sync::Arc};
-use aptos_api_types::HashValue;
-use aptos_types::transaction::SignedTransaction;
-use aptos_types::transaction::Transaction::UserTransaction;
+use aptos_api_types::{TransactionOnChainData};
 
 pub struct DBDebuggerInterface(Arc<dyn DbReader>);
 
@@ -82,7 +80,7 @@ impl AptosValidatorInterface for DBDebuggerInterface {
         Ok((txns, txn_infos))
     }
 
-    async fn get_transaction_by_hash(&self, hash: String) -> Result<Transaction> {
+    async fn get_transaction_by_hash(&self, _hash: String) -> Result<TransactionOnChainData> {
         unimplemented!()
     }
 
