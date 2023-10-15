@@ -3,6 +3,8 @@
 
 mod config;
 mod server;
+mod sync_tracer_view;
+mod sync_storage_interface;
 
 pub use server::run_debugger_server;
 pub use config::DebuggerServerConfig;
@@ -25,6 +27,8 @@ use std::{path::Path, sync::Arc};
 use aptos_rest_client::aptos_api_types::call_trace::CallTrace;
 use aptos_vm::transaction_metadata::TransactionMetadata;
 use move_core_types::call_trace::CallTraces;
+use crate::sync_storage_interface::DBTracerInterface;
+use crate::sync_tracer_view::{AptosTracerInterface, SyncTracerView};
 
 pub struct AptosTracer {
     debugger: Arc<dyn AptosValidatorInterface + Send>,
@@ -83,3 +87,58 @@ impl AptosTracer {
         }
     }
 }
+
+pub struct SyncAptosTracer {
+    debugger: Arc<dyn AptosTracerInterface + Send>,
+}
+
+impl SyncAptosTracer {
+    pub fn new(debugger: Arc<dyn AptosTracerInterface + Send>) -> Self {
+        Self { debugger }
+    }
+
+    pub fn db<P: AsRef<Path> + Clone>(db_root_path: P) -> Result<Self> {
+        Ok(Self::new(Arc::new(DBTracerInterface::open(
+            db_root_path,
+        )?)))
+    }
+
+    pub fn trace_transaction(
+        &self,
+        txn_hash: String,
+    ) -> Result<CallTrace> {
+        let txn_data = self.debugger.get_transaction_by_hash(txn_hash)?;
+        let txn = txn_data.transaction;
+        let state_view = SyncTracerView::new(self.debugger.clone(), Version::from(txn_data.version));
+        let call_traces = match txn {
+            Transaction::UserTransaction(user_txn) => {
+                let txn_metadata = TransactionMetadata::new(&user_txn);
+                match user_txn.payload() {
+                    TransactionPayload::EntryFunction(entry_func) => {
+                        AptosVM::get_call_trace(
+                            &state_view,
+                            entry_func.module().clone(),
+                            entry_func.function().to_owned(),
+                            entry_func.ty_args().to_vec(),
+                            entry_func.args().to_vec(),
+                            txn_metadata.senders(),
+                            user_txn.max_gas_amount(),
+                        )
+                    },
+                    _ => Ok(CallTraces::new()),
+                }
+            },
+            _ => Ok(CallTraces::new()),
+        };
+
+        match call_traces {
+            Ok(mut _call_traces) => {
+                Ok(CallTrace::from(_call_traces.root().unwrap()))
+            }
+            Err(err) => {
+                Err(anyhow!(err))
+            }
+        }
+    }
+}
+

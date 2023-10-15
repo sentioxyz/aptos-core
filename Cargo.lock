@@ -3270,13 +3270,16 @@ name = "aptos-tracer"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "aptos-config",
  "aptos-crypto",
+ "aptos-db",
  "aptos-gas",
  "aptos-gas-profiling",
  "aptos-logger",
  "aptos-resource-viewer",
  "aptos-rest-client",
  "aptos-state-view",
+ "aptos-storage-interface",
  "aptos-types",
  "aptos-validator-interface",
  "aptos-vm",

@@ -33,3 +33,6 @@ url = { workspace = true }
 poem = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+aptos-storage-interface = { workspace = true }
+aptos-db = { workspace = true }
+aptos-config = { workspace = true }
