@@ -24,6 +24,7 @@ use move_binary_format::file_format::CompiledModule;
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 use aptos_api_types::TransactionOnChainData;
+use aptos_framework::natives::code::PackageRegistry;
 
 // TODO(skedia) Clean up this interfact to remove account specific logic and move to state store
 // key-value interface with fine grained storage project
@@ -117,6 +118,12 @@ pub trait AptosValidatorInterface: Sync {
         }
         Ok(result)
     }
+
+    async fn get_package_registry(
+        &self,
+        account: AccountAddress,
+        version: Version,
+    ) -> Result<Option<PackageRegistry>>;
 }
 
 pub struct DebuggerStateView {

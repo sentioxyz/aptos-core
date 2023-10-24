@@ -16,6 +16,7 @@ use aptos_types::{
 };
 use std::collections::BTreeMap;
 use std::str::FromStr;
+use aptos_framework::natives::code::PackageRegistry;
 
 pub struct RestDebuggerInterface(Client);
 
@@ -134,6 +135,15 @@ impl AptosValidatorInterface for RestDebuggerInterface {
                 .await?
                 .into_inner()[0]
                 .version,
+        ))
+    }
+
+    async fn get_package_registry(&self, account: AccountAddress, version: Version) -> Result<Option<PackageRegistry>> {
+        Ok(Some(
+            self.0
+                .get_account_resource_at_version_bcs::<PackageRegistry>(account, "0x1::code::PackageRegistry", version)
+                .await?
+                .into_inner()
         ))
     }
 }

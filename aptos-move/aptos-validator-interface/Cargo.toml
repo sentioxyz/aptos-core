@@ -27,3 +27,4 @@ itertools = { workspace = true }
 lru = { workspace = true }
 move-binary-format = { workspace = true }
 tokio = { workspace = true }
+aptos-framework = { workspace = true }

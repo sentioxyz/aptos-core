@@ -6,11 +6,10 @@ use anyhow::Result;
 use poem::{
     handler, http::Method, listener::TcpListener, middleware::Cors, EndpointExt, Route, Server, get, web::Path,
 };
-use std::future::Future;
 use serde_json;
 
 #[handler]
-async fn call_trace(Path(hash): Path<(String)>) -> String {
+async fn call_trace(Path(hash): Path<String>) -> String {
     match std::env::var_os("DB_PATH") {
         Some(val) => {
             let db_path = val.to_str().unwrap();

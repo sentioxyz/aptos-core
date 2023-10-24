@@ -447,7 +447,7 @@ impl Interpreter {
                         inputs.push((*val).copy_value().unwrap());
                     }
                     call_traces.push(InternalCallTrace {
-                        pc: 0,
+                        pc: current_frame.pc,
                         module_id: module_id.to_string(),
                         func_name: func.name().to_string(),
                         inputs: inputs.into_iter().zip(func.parameter_types()).map(|(value, ty)| {
@@ -535,7 +535,7 @@ impl Interpreter {
                         inputs.push((*val).copy_value().unwrap());
                     }
                     call_traces.push(InternalCallTrace {
-                        pc: 0,
+                        pc: current_frame.pc,
                         module_id: module_id.to_string(),
                         func_name: func.name().to_string(),
                         inputs: inputs.into_iter().zip(func.parameter_types()).map(|(value, ty)| {
