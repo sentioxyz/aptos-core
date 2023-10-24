@@ -3,6 +3,7 @@ use std::sync::Arc;
 // Parts of the project are originally copyright © Meta Platforms, Inc.
 // SPDX-License-Identifier: Apache-2.0
 use anyhow::{anyhow, Result};
+use aptos_framework::natives::code::PackageRegistry;
 use aptos_state_view::TStateView;
 use aptos_types::{
     account_address::AccountAddress,
@@ -105,6 +106,12 @@ pub trait AptosTracerInterface: Sync {
         }
         Ok(result)
     }
+
+    fn get_package_registry(
+        &self,
+        account: AccountAddress,
+        version: Version,
+    ) -> Result<Option<PackageRegistry>>;
 }
 
 pub struct SyncTracerView {

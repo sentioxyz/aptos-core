@@ -61,6 +61,8 @@ impl AptosTracer {
                 let txn_metadata = TransactionMetadata::new(&user_txn);
                 match user_txn.payload() {
                     TransactionPayload::EntryFunction(entry_func) => {
+                        let account  = entry_func.module().address();
+                        let package = self.debugger.get_package_registry(*account, Version::from(txn_data.version)).await;
                         AptosVM::get_call_trace(
                             &state_view,
                             entry_func.module().clone(),

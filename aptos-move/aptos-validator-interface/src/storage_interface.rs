@@ -18,6 +18,7 @@ use aptos_types::{
 };
 use std::{path::Path, sync::Arc};
 use aptos_api_types::{TransactionOnChainData};
+use aptos_framework::natives::code::PackageRegistry;
 
 pub struct DBDebuggerInterface(Arc<dyn DbReader>);
 
@@ -98,5 +99,9 @@ impl AptosValidatorInterface for DBDebuggerInterface {
             .0
             .get_account_transaction(account, seq, false, ledger_version)?
             .map(|info| info.version))
+    }
+
+    async fn get_package_registry(&self, account: AccountAddress, version: Version) -> Result<Option<PackageRegistry>> {
+        unimplemented!()
     }
 }

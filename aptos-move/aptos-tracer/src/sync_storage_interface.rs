@@ -16,6 +16,7 @@ use aptos_types::{
     transaction::{Transaction, TransactionInfo, Version},
 };
 use std::{path::Path, sync::Arc};
+use aptos_framework::natives::code::PackageRegistry;
 use aptos_rest_client::aptos_api_types::TransactionOnChainData;
 use crate::sync_tracer_view::AptosTracerInterface;
 
@@ -97,5 +98,13 @@ impl AptosTracerInterface for DBTracerInterface {
             .0
             .get_account_transaction(account, seq, false, ledger_version)?
             .map(|info| info.version))
+    }
+
+    fn get_package_registry(
+        &self,
+        account: AccountAddress,
+        version: Version,
+    ) -> Result<Option<PackageRegistry>> {
+        unimplemented!()
     }
 }
