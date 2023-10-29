@@ -315,6 +315,7 @@ impl Interpreter {
             .map_err(|err| self.set_location(err))?;
         call_traces.push(InternalCallTrace {
             pc: current_frame.pc,
+            fdef_idx: current_frame.function.index().0 as u16,
             module_id: module.to_string(),
             func_name: current_frame.function.name().to_string(),
             inputs: args_1.into_iter().zip(current_frame.function.parameter_types()).map(|(value, ty)| {
@@ -342,7 +343,7 @@ impl Interpreter {
             type_args: current_frame.ty_args().into_iter().map(|ty| {
                 loader.type_to_type_tag(ty).unwrap().to_string()
             }).collect(),
-            sub_traces: vec![],
+            sub_traces: CallTraces::new(),
         }).map_err(|_e| {
             let err = PartialVMError::new(StatusCode::ABORTED);
             let err = set_err_info!(current_frame, err);
@@ -448,6 +449,7 @@ impl Interpreter {
                     }
                     call_traces.push(InternalCallTrace {
                         pc: current_frame.pc,
+                        fdef_idx: current_frame.function.index().0 as u16,
                         module_id: module_id.to_string(),
                         func_name: func.name().to_string(),
                         inputs: inputs.into_iter().zip(func.parameter_types()).map(|(value, ty)| {
@@ -474,7 +476,7 @@ impl Interpreter {
                         type_args: current_frame.ty_args().into_iter().map(|ty| {
                             loader.type_to_type_tag(ty).unwrap().to_string()
                         }).collect(),
-                        sub_traces: vec![],
+                        sub_traces: CallTraces::new(),
                     }).map_err(|_e| {
                         let err = PartialVMError::new(StatusCode::ABORTED);
                         let err = set_err_info!(current_frame, err);
@@ -536,6 +538,7 @@ impl Interpreter {
                     }
                     call_traces.push(InternalCallTrace {
                         pc: current_frame.pc,
+                        fdef_idx: current_frame.function.index().0 as u16,
                         module_id: module_id.to_string(),
                         func_name: func.name().to_string(),
                         inputs: inputs.into_iter().zip(func.parameter_types()).map(|(value, ty)| {
@@ -562,7 +565,7 @@ impl Interpreter {
                         type_args: current_frame.ty_args().into_iter().map(|ty| {
                             loader.type_to_type_tag(ty).unwrap().to_string()
                         }).collect(),
-                        sub_traces: vec![],
+                        sub_traces: CallTraces::new(),
                     }).map_err(|_e| {
                         let err = PartialVMError::new(StatusCode::ABORTED);
                         let err = set_err_info!(current_frame, err);
