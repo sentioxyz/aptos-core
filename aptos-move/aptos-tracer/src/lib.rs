@@ -86,14 +86,6 @@ impl AptosTracer {
             _ => CallTraceWithSource::default(),
         };
 
-        // match call_traces {
-        //     Ok(mut _call_traces) => {
-        //         Ok(CallTrace::from(_call_traces.root().unwrap()))
-        //     }
-        //     Err(err) => {
-        //         Err(anyhow!(err))
-        //     }
-        // }
         Ok(call_traces)
     }
 }
@@ -116,7 +108,7 @@ impl SyncAptosTracer {
     pub fn trace_transaction(
         &self,
         txn_hash: String,
-    ) -> Result<CallTrace> {
+    ) -> Result<CallTraceWithSource> {
         let txn_data = self.debugger.get_transaction_by_hash(txn_hash)?;
         let txn = txn_data.transaction;
         let state_view = SyncTracerView::new(self.debugger.clone(), Version::from(txn_data.version));
@@ -125,7 +117,9 @@ impl SyncAptosTracer {
                 let txn_metadata = TransactionMetadata::new(&user_txn);
                 match user_txn.payload() {
                     TransactionPayload::EntryFunction(entry_func) => {
-                        AptosVM::get_call_trace(
+                        let account  = entry_func.module().address();
+                        let package = self.debugger.get_package_registry(*account, Version::from(txn_data.version));
+                        let call_trace = AptosVM::get_call_trace(
                             &state_view,
                             entry_func.module().clone(),
                             entry_func.function().to_owned(),
@@ -133,22 +127,16 @@ impl SyncAptosTracer {
                             entry_func.args().to_vec(),
                             txn_metadata.senders(),
                             user_txn.max_gas_amount(),
-                        )
+                        );
+                        CallTraceWithSource::from(call_trace.unwrap().root().unwrap(), &package.unwrap().unwrap())
                     },
-                    _ => Ok(CallTraces::new()),
+                    _ => CallTraceWithSource::default(),
                 }
             },
-            _ => Ok(CallTraces::new()),
+            _ => CallTraceWithSource::default(),
         };
 
-        match call_traces {
-            Ok(mut _call_traces) => {
-                Ok(CallTrace::from(_call_traces.root().unwrap()))
-            }
-            Err(err) => {
-                Err(anyhow!(err))
-            }
-        }
+        Ok(call_traces)
     }
 }
 
@@ -188,7 +176,21 @@ impl CallTraceWithSource {
         let account = split_module.next();
         let module_name  = split_module.next();
         let mut files = Files::new();
-        let mut traces = vec![];
+        let mut call_trace_with_source = CallTraceWithSource {
+            module_id: call_trace.module_id.to_string(),
+            func_name: call_trace.func_name.to_string(),
+            inputs: call_trace.inputs.clone(),
+            return_value: call_trace.outputs.clone(),
+            type_args: call_trace.type_args.clone(),
+            calls: call_trace.sub_traces.clone().0.into_iter().map(|sub_trace| {
+                CallTraceWithSource::from(sub_trace, package_registry)
+            }).collect(),
+            location: Location {
+                account: account.unwrap().to_string(),
+                module: module_name.unwrap().to_string(),
+                lines: Range { start: Position { line: 0, column: 0 }, end: Position { line: 0, column: 0 } },
+            },
+        };
         package_registry.packages.clone().into_iter().for_each(|package| {
             let matched_module = package.modules.into_iter().find(|module| {
                 module.name.as_str() == module_name.unwrap()
@@ -196,6 +198,9 @@ impl CallTraceWithSource {
             match matched_module {
                 None => {}
                 Some(m) => {
+                    if m.source_map.len() == 0 || m.source.len() == 0 {
+                        return;
+                    }
                     let source_map = unzip_metadata(&m.source_map).unwrap();
                     let source_code = unzip_metadata_str(&m.source).unwrap();
                     let file_id = files.add(module_name.unwrap(), source_code);
@@ -205,29 +210,14 @@ impl CallTraceWithSource {
                         CodeOffset::from(call_trace.pc)).unwrap();
                     let start_loc = files.location(file_id, loc.start()).unwrap();
                     let end_loc = files.location(file_id, loc.end()).unwrap();
-                    let call_trace_with_source = CallTraceWithSource {
-                        module_id: call_trace.module_id.to_string(),
-                        func_name: call_trace.func_name.to_string(),
-                        inputs: call_trace.inputs.clone(),
-                        return_value: call_trace.outputs.clone(),
-                        type_args: call_trace.type_args.clone(),
-                        calls: call_trace.sub_traces.clone().0.into_iter().map(|sub_trace| {
-                            CallTraceWithSource::from(sub_trace, package_registry)
-                        }).collect(),
-                        location: Location {
-                            account: account.unwrap().to_string(),
-                            module: module_name.unwrap().to_string(),
-                            lines: Range {
-                                start: Position { line: start_loc.line.0 as u32, column: start_loc.column.0 as u32 },
-                                end: Position { line: end_loc.line.0 as u32, column: end_loc.column.0 as u32 }
-                            },
-                        },
+                    call_trace_with_source.location.lines = Range {
+                        start: Position { line: start_loc.line.0 as u32, column: start_loc.column.0 as u32 },
+                        end: Position { line: end_loc.line.0 as u32, column: end_loc.column.0 as u32 }
                     };
-                    traces.push(call_trace_with_source);
                 }
             }
         });
-        traces.pop().unwrap()
+        call_trace_with_source
     }
 }
 

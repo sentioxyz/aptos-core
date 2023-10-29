@@ -16,8 +16,11 @@ use aptos_types::{
     transaction::{Transaction, TransactionInfo, Version},
 };
 use std::{path::Path, sync::Arc};
+use std::str::FromStr;
 use aptos_framework::natives::code::PackageRegistry;
 use aptos_rest_client::aptos_api_types::TransactionOnChainData;
+use aptos_types::access_path::AccessPath;
+use move_core_types::language_storage::StructTag;
 use crate::sync_tracer_view::AptosTracerInterface;
 
 pub struct DBTracerInterface(Arc<dyn DbReader>);
@@ -105,6 +108,16 @@ impl AptosTracerInterface for DBTracerInterface {
         account: AccountAddress,
         version: Version,
     ) -> Result<Option<PackageRegistry>> {
-        unimplemented!()
+        let path =
+            AccessPath::resource_access_path(account, StructTag::from_str("0x1::code::PackageRegistry").unwrap()).expect("access path in test");
+        let state_key = StateKey::access_path(path);
+        let state_value = self.get_state_value_by_version(&state_key, version)?;
+        match state_value {
+            Some(state_value) => {
+                let package_registry: PackageRegistry = bcs::from_bytes(&state_value.into_bytes()).unwrap();
+                Ok(Some(package_registry))
+            }
+            None => Ok(None)
+        }
     }
 }
