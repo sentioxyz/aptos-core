@@ -6,6 +6,9 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+codespan = "0.11.1"
+
+bcs = { workspace = true }
 anyhow = { workspace = true }
 aptos-crypto = { workspace = true }
 aptos-gas = { workspace = true }
@@ -37,3 +40,4 @@ aptos-storage-interface = { workspace = true }
 aptos-db = { workspace = true }
 aptos-config = { workspace = true }
 aptos-framework = { workspace = true }
+move-bytecode-source-map = { workspace = true }

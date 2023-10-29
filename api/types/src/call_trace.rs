@@ -25,7 +25,7 @@ impl From<InternalCallTrace> for CallTrace {
             inputs: value.inputs,
             outputs: value.outputs,
             type_args: value.type_args,
-            sub_traces: value.sub_traces.into_iter().enumerate().map(|(_, trace)| {
+            sub_traces: value.sub_traces.0.into_iter().enumerate().map(|(_, trace)| {
                 CallTrace::from(trace)
             }).collect(),
         }

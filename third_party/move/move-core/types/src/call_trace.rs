@@ -13,11 +13,12 @@ pub struct InternalCallTrace {
     pub inputs: Vec<String>,
     pub outputs: Vec<String>,
     pub type_args: Vec<String>,
-    pub sub_traces: Vec<InternalCallTrace>,
+    pub sub_traces: CallTraces,
+    pub fdef_idx: u16,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct CallTraces(Vec<InternalCallTrace>);
+pub struct CallTraces(pub Vec<InternalCallTrace>);
 
 impl CallTraces {
     pub fn new() -> Self {
