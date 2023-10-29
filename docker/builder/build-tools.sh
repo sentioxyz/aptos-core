@@ -27,6 +27,7 @@ cargo build --locked --profile=$PROFILE \
     -p aptos-indexer-grpc-data-service \
     -p aptos-indexer-grpc-parser \
     -p aptos-indexer-grpc-post-processor \
+    -p aptos-tracer \
     "$@"
 
 # After building, copy the binaries we need to `dist` since the `target` directory is used as docker cache mount and only available during the RUN step
@@ -46,6 +47,7 @@ BINS=(
     aptos-indexer-grpc-data-service
     aptos-indexer-grpc-parser
     aptos-indexer-grpc-post-processor
+    aptos-tracer
 )
 
 mkdir dist
