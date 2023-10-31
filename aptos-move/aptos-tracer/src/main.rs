@@ -11,7 +11,7 @@ use url::Url;
 #[derive(Subcommand)]
 pub enum Target {
     /// Use full node's rest api as query endpoint.
-    Rest { endpoint: String },
+    Rest { endpoint: String, txn_hash: String },
     /// Use a local db instance to serve as query endpoint.
     DB { path: PathBuf },
 }
@@ -19,9 +19,6 @@ pub enum Target {
 pub struct Argument {
     #[clap(subcommand)]
     target: Target,
-
-    #[clap(long)]
-    txn_hash: String,
 }
 
 #[tokio::main]
@@ -30,12 +27,12 @@ async fn main() -> Result<()> {
     let args = Argument::parse();
 
     match args.target {
-        Target::Rest { endpoint } => {
+        Target::Rest { endpoint, txn_hash } => {
             let tracer = AptosTracer::rest_client(Client::new(Url::parse(&endpoint)?))?;
             println!(
                 "{:#?}",
                 tracer
-                    .trace_transaction(args.txn_hash)
+                    .trace_transaction(txn_hash)
                     .await?
             );
             Ok(())
