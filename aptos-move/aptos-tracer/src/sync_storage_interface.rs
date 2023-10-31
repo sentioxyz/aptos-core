@@ -20,7 +20,7 @@ use std::str::FromStr;
 use aptos_framework::natives::code::PackageRegistry;
 use aptos_rest_client::aptos_api_types::TransactionOnChainData;
 use aptos_types::access_path::AccessPath;
-use aptos_types::transaction::TransactionWithProof;
+
 use move_core_types::language_storage::StructTag;
 use crate::sync_tracer_view::AptosTracerInterface;
 

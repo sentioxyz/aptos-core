@@ -101,7 +101,7 @@ impl AptosValidatorInterface for DBDebuggerInterface {
             .map(|info| info.version))
     }
 
-    async fn get_package_registry(&self, account: AccountAddress, version: Version) -> Result<Option<PackageRegistry>> {
+    async fn get_package_registry(&self, _account: AccountAddress, _version: Version) -> Result<Option<PackageRegistry>> {
         unimplemented!()
     }
 }

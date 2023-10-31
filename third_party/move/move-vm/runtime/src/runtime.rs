@@ -519,7 +519,7 @@ impl VMRuntime {
         let LoadedFunctionInstantiation {
             type_arguments,
             parameters,
-            return_,
+            return_: _,
         } = function_instantiation;
 
         use move_binary_format::{binary_views::BinaryIndexedView, file_format::SignatureIndex};
@@ -554,7 +554,7 @@ impl VMRuntime {
             .map(|ty| ty.subst(&type_arguments))
             .collect::<PartialVMResult<Vec<_>>>()
             .map_err(|err| err.finish(Location::Undefined))?;
-        let (mut dummy_locals, deserialized_args) = self
+        let (_dummy_locals, deserialized_args) = self
             .deserialize_args(arg_types, serialized_args)
             .map_err(|e| e.finish(Location::Undefined))?;
 

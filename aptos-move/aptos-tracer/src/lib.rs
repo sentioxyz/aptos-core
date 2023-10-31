@@ -9,7 +9,7 @@ mod sync_storage_interface;
 pub use server::run_debugger_server;
 pub use config::DebuggerServerConfig;
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result};
 use aptos_rest_client::{Client};
 use aptos_types::{
     transaction::{
@@ -28,11 +28,11 @@ use codespan::Files;
 use serde::{Deserialize, Serialize};
 use aptos_framework::natives::code::PackageRegistry;
 use aptos_framework::{unzip_metadata, unzip_metadata_str};
-use aptos_rest_client::aptos_api_types::call_trace::CallTrace;
+
 use aptos_vm::transaction_metadata::TransactionMetadata;
 use move_binary_format::file_format::{CodeOffset, FunctionDefinitionIndex, TableIndex};
 use move_bytecode_source_map::source_map::SourceMap;
-use move_core_types::call_trace::{CallTraces, InternalCallTrace};
+use move_core_types::call_trace::{InternalCallTrace};
 use crate::sync_storage_interface::DBTracerInterface;
 use crate::sync_tracer_view::{AptosTracerInterface, SyncTracerView};
 
