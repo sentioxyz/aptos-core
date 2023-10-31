@@ -20,6 +20,7 @@ use std::str::FromStr;
 use aptos_framework::natives::code::PackageRegistry;
 use aptos_rest_client::aptos_api_types::TransactionOnChainData;
 use aptos_types::access_path::AccessPath;
+use aptos_types::transaction::TransactionWithProof;
 use move_core_types::language_storage::StructTag;
 use crate::sync_tracer_view::AptosTracerInterface;
 
@@ -84,7 +85,31 @@ impl AptosTracerInterface for DBTracerInterface {
     }
 
     fn get_transaction_by_hash(&self, _hash: String) -> Result<TransactionOnChainData> {
-        unimplemented!()
+        let ledger_version = self.get_latest_version().unwrap();
+        let from_db: Result<Option<TransactionOnChainData>> = self
+            .0
+            .get_transaction_by_hash(_hash.parse()?, ledger_version, true)?
+            .map(|t| -> Result<TransactionOnChainData> {
+                // the type is Vec<(Transaction, TransactionOutput)> - given we have one transaction here, there should only ever be one value in this array
+                let (_, txn_output) = &self
+                    .0
+                    .get_transaction_outputs(t.version, 1, t.version)?
+                    .transactions_and_outputs[0];
+                self.0.get_accumulator_root_hash(t.version)
+                    .map(|h| (t, h, txn_output).into())
+            })
+            .transpose();
+        match from_db {
+            Ok(v) => {
+                match v {
+                    Some(v) => Ok(v),
+                    None => bail!("Transaction not found")
+                }
+            }
+            Err(e) => {
+                bail!(e)
+            }
+        }
     }
 
     fn get_latest_version(&self) -> Result<Version> {
