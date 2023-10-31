@@ -45,7 +45,7 @@ impl CallTraces {
 
     pub fn push_call_trace(&mut self, call_trace: InternalCallTrace) {
         let length = self.0.len();
-        self.0[length - 1].sub_traces.push(call_trace);
+        self.0[length - 1].sub_traces.push(call_trace).expect("exceed the call trace limit");
     }
 
     pub fn len(&self) -> usize {
