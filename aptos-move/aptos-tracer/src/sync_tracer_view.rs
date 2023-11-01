@@ -144,10 +144,6 @@ impl TStateView for SyncTracerView {
         self.get_state_value_internal(state_key, self.version)
     }
 
-    fn is_genesis(&self) -> bool {
-        false
-    }
-
     fn get_usage(&self) -> Result<StateStorageUsage> {
         unimplemented!()
     }

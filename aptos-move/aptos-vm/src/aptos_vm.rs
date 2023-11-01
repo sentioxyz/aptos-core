@@ -1416,17 +1416,19 @@ impl AptosVM {
         senders: Vec<AccountAddress>,
         gas_budget: u64,
     ) -> Result<CallTraces> {
-        let vm = AptosVM::new(state_view);
+        let vm = AptosVM::new_from_state_view(state_view);
         let log_context = AdapterLogSchema::new(state_view.id(), 0);
         let mut gas_meter =
             StandardGasMeter::new(
-                vm.0.get_gas_feature_version(),
-                vm.0.get_gas_parameters(&log_context)?.clone(),
-                vm.0.get_storage_gas_parameters(&log_context)?.clone(),
-                gas_budget,
+                StandardGasAlgebra::new(
+                    vm.0.get_gas_feature_version(),
+                    vm.0.get_gas_parameters(&log_context)?.vm.clone(),
+                    vm.0.get_storage_gas_parameters(&log_context)?.clone(),
+                    gas_budget,
+                ),
             );
         let resolver = vm.as_move_resolver(state_view);
-        let mut session = vm.new_session(&resolver, SessionId::Void, true);
+        let mut session = vm.new_session(&resolver, SessionId::Void);
         let function = session.load_function(
             &module_id,
             &func_name,
