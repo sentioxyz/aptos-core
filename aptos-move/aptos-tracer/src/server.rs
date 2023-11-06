@@ -14,7 +14,11 @@ async fn call_trace(Path(hash): Path<String>) -> String {
         Some(val) => {
             let db_path = val.to_str().unwrap();
             let tracer = SyncAptosTracer::db(db_path);
-            let call_trace = tracer.unwrap().trace_transaction(hash).unwrap();
+            let call_trace = if let Some(hex) = hash.strip_prefix("0x") {
+                tracer.unwrap().trace_transaction(hex.to_string()).unwrap()
+            } else {
+                tracer.unwrap().trace_transaction(hash).unwrap()
+            };
             serde_json::to_string_pretty(&call_trace).unwrap()
         }
         None => {
