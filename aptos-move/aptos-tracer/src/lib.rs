@@ -24,6 +24,8 @@ use aptos_vm::{
     AptosVM
 };
 use std::{path::Path, sync::Arc};
+use std::collections::HashMap;
+use std::str::FromStr;
 use codespan::Files;
 use serde::{Deserialize, Serialize};
 use aptos_framework::natives::code::PackageRegistry;
@@ -32,6 +34,7 @@ use aptos_framework::{unzip_metadata, unzip_metadata_str};
 use aptos_vm::transaction_metadata::TransactionMetadata;
 use move_binary_format::file_format::{CodeOffset, FunctionDefinitionIndex, TableIndex};
 use move_bytecode_source_map::source_map::SourceMap;
+use move_core_types::account_address::AccountAddress;
 use move_core_types::call_trace::{InternalCallTrace};
 use crate::sync_storage_interface::DBTracerInterface;
 use crate::sync_tracer_view::{AptosTracerInterface, SyncTracerView};
@@ -67,8 +70,6 @@ impl AptosTracer {
                 let txn_metadata = TransactionMetadata::new(&user_txn);
                 match user_txn.payload() {
                     TransactionPayload::EntryFunction(entry_func) => {
-                        let account  = entry_func.module().address();
-                        let package = self.debugger.get_package_registry(*account, Version::from(txn_data.version)).await;
                         let call_trace = AptosVM::get_call_trace(
                             &state_view,
                             entry_func.module().clone(),
@@ -77,8 +78,15 @@ impl AptosTracer {
                             entry_func.args().to_vec(),
                             txn_metadata.senders(),
                             user_txn.max_gas_amount(),
-                        );
-                        CallTraceWithSource::from(call_trace.unwrap().root().unwrap(), &package.unwrap().unwrap())
+                        ).unwrap();
+                        // get all the package registries from accounts in call_trace
+                        let mut package_registries = HashMap::new();
+                        for account in &call_trace.1 {
+                            let package_registry = self.debugger.get_package_registry(
+                                AccountAddress::from_str(account.as_str()).unwrap(), Version::from(txn_data.version)).await;
+                            package_registries.insert(account.to_string(), package_registry.unwrap().unwrap());
+                        }
+                        CallTraceWithSource::from(call_trace.clone().root().unwrap(), &package_registries)
                     },
                     _ => CallTraceWithSource::default(),
                 }
@@ -117,8 +125,6 @@ impl SyncAptosTracer {
                 let txn_metadata = TransactionMetadata::new(&user_txn);
                 match user_txn.payload() {
                     TransactionPayload::EntryFunction(entry_func) => {
-                        let account  = entry_func.module().address();
-                        let package = self.debugger.get_package_registry(*account, Version::from(txn_data.version));
                         let call_trace = AptosVM::get_call_trace(
                             &state_view,
                             entry_func.module().clone(),
@@ -127,8 +133,15 @@ impl SyncAptosTracer {
                             entry_func.args().to_vec(),
                             txn_metadata.senders(),
                             user_txn.max_gas_amount(),
-                        );
-                        CallTraceWithSource::from(call_trace.unwrap().root().unwrap(), &package.unwrap().unwrap())
+                        ).unwrap();
+                        // get all the package registries from accounts in call_trace
+                        let mut package_registries = HashMap::new();
+                        for account in &call_trace.1 {
+                            let package_registry = self.debugger.get_package_registry(
+                                AccountAddress::from_str(account.as_str()).unwrap(), Version::from(txn_data.version));
+                            package_registries.insert(account.to_string(), package_registry.unwrap().unwrap());
+                        }
+                        CallTraceWithSource::from(call_trace.clone().root().unwrap(), &package_registries)
                     },
                     _ => CallTraceWithSource::default(),
                 }
@@ -171,7 +184,7 @@ impl CallTraceWithSource {
         }
     }
     
-    pub fn from(call_trace: InternalCallTrace, package_registry: &PackageRegistry) -> Self {
+    pub fn from(call_trace: InternalCallTrace, package_registries: &HashMap<String, PackageRegistry>) -> Self {
         let mut split_module = call_trace.module_id.split("::");
         let account = split_module.next();
         let module_name  = split_module.next();
@@ -183,7 +196,7 @@ impl CallTraceWithSource {
             return_value: call_trace.outputs.clone(),
             type_args: call_trace.type_args.clone(),
             calls: call_trace.sub_traces.clone().0.into_iter().map(|sub_trace| {
-                CallTraceWithSource::from(sub_trace, package_registry)
+                CallTraceWithSource::from(sub_trace, package_registries)
             }).collect(),
             location: Location {
                 account: account.unwrap().to_string(),
@@ -191,7 +204,7 @@ impl CallTraceWithSource {
                 lines: Range { start: Position { line: 0, column: 0 }, end: Position { line: 0, column: 0 } },
             },
         };
-        package_registry.packages.clone().into_iter().for_each(|package| {
+        package_registries.get(account.unwrap()).unwrap().packages.clone().into_iter().for_each(|package| {
             let matched_module = package.modules.into_iter().find(|module| {
                 module.name.as_str() == module_name.unwrap()
             });

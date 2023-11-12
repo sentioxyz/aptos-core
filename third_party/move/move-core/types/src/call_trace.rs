@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use serde::{Deserialize, Serialize};
 
 const CALL_STACK_SIZE_LIMIT: usize = 1024;
@@ -18,16 +19,18 @@ pub struct InternalCallTrace {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct CallTraces(pub Vec<InternalCallTrace>);
+pub struct CallTraces(pub Vec<InternalCallTrace>, pub HashSet<String>);
 
 impl CallTraces {
     pub fn new() -> Self {
-        CallTraces(vec![])
+        CallTraces(vec![], HashSet::new())
     }
 
     pub fn push(&mut self, trace: InternalCallTrace) -> Result<(), InternalCallTrace> {
         if self.0.len() < CALL_STACK_SIZE_LIMIT {
             self.0.push(trace);
+            let account = self.0[self.0.len() - 1].module_id.split("::").next().unwrap().to_string();
+            self.1.insert(account);
             Ok(())
         } else {
             Err(trace)
