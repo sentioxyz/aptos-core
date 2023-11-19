@@ -9,6 +9,7 @@ const CALL_STACK_SIZE_LIMIT: usize = 1024;
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct InternalCallTrace {
     pub pc: u16,
+    pub from_module_id: String,
     pub module_id: String,
     pub func_name: String,
     pub inputs: Vec<String>,

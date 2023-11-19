@@ -314,6 +314,7 @@ impl Interpreter {
             .make_new_frame(loader, function, ty_args, locals)
             .map_err(|err| self.set_location(err))?;
         call_traces.push(InternalCallTrace {
+            from_module_id: current_frame.function.module_id().unwrap().to_string(),
             pc: current_frame.pc,
             fdef_idx: current_frame.function.index().0 as u16,
             module_id: module.to_string(),
@@ -448,6 +449,7 @@ impl Interpreter {
                         inputs.push((*val).copy_value().unwrap());
                     }
                     call_traces.push(InternalCallTrace {
+                        from_module_id: current_frame.function.module_id().unwrap().to_string(),
                         pc: current_frame.pc,
                         fdef_idx: current_frame.function.index().0 as u16,
                         module_id: module_id.to_string(),
@@ -537,6 +539,7 @@ impl Interpreter {
                         inputs.push((*val).copy_value().unwrap());
                     }
                     call_traces.push(InternalCallTrace {
+                        from_module_id: current_frame.function.module_id().unwrap().to_string(),
                         pc: current_frame.pc,
                         fdef_idx: current_frame.function.index().0 as u16,
                         module_id: module_id.to_string(),

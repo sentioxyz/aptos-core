@@ -13,7 +13,7 @@ async fn call_trace(Path(hash): Path<String>) -> String {
     match std::env::var_os("DB_PATH") {
         Some(val) => {
             let db_path = val.to_str().unwrap();
-            let tracer = SyncAptosTracer::db(db_path);
+            let tracer = SyncAptosTracer::db(db_path, std::env::var("SENTIO_ENDPOINT").unwrap());
             let call_trace = if let Some(hex) = hash.strip_prefix("0x") {
                 tracer.unwrap().trace_transaction(hex.to_string()).unwrap()
             } else {
@@ -29,9 +29,11 @@ async fn call_trace(Path(hash): Path<String>) -> String {
 
 pub async fn run_debugger_server(
     config: DebuggerServerConfig,
+    sentio_endpoint: String,
 ) -> Result<()>  {
     let cors = Cors::new().allow_methods(vec![Method::GET]);
     std::env::set_var("DB_PATH", config.db_path);
+    std::env::set_var("SENTIO_ENDPOINT", sentio_endpoint);
     Server::new(TcpListener::bind((
         config.listen_address.clone(),
         config.listen_port,

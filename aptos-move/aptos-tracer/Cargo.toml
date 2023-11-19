@@ -40,3 +40,5 @@ aptos-db = { workspace = true }
 aptos-config = { workspace = true }
 aptos-framework = { workspace = true }
 move-bytecode-source-map = { workspace = true }
+reqwest = { workspace = true }
+hex = { workspace = true }

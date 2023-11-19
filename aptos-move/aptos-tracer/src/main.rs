@@ -19,6 +19,9 @@ pub enum Target {
 pub struct Argument {
     #[clap(subcommand)]
     target: Target,
+
+    #[clap(long, default_value = "https://test.sentio.xyz")]
+    sentio_endpoint: String,
 }
 
 #[tokio::main]
@@ -28,7 +31,7 @@ async fn main() -> Result<()> {
 
     match args.target {
         Target::Rest { endpoint, txn_hash } => {
-            let tracer = AptosTracer::rest_client(Client::new(Url::parse(&endpoint)?))?;
+            let tracer = AptosTracer::rest_client(Client::new(Url::parse(&endpoint)?), args.sentio_endpoint)?;
             println!(
                 "{:#?}",
                 tracer
@@ -41,7 +44,7 @@ async fn main() -> Result<()> {
             // run as a server if the target is DB
             let mut config = DebuggerServerConfig::default();
             config.set_db_path(path);
-            run_debugger_server(config).await
+            run_debugger_server(config, args.sentio_endpoint).await
         },
     }
 }
