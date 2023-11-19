@@ -1,15 +1,16 @@
 // Copyright © Aptos Foundation
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::{DebuggerServerConfig, SyncAptosTracer};
-use anyhow::Result;
+use crate::{CallTraceWithSource, DebuggerServerConfig, SyncAptosTracer};
 use poem::{
     handler, http::Method, listener::TcpListener, middleware::Cors, EndpointExt, Route, Server, get, web::Path,
 };
+use anyhow::Result;
+use poem::web::Json;
 use serde_json;
 
 #[handler]
-async fn call_trace(Path(hash): Path<String>) -> String {
+async fn call_trace(Path(hash): Path<String>) -> Json<CallTraceWithSource> {
     match std::env::var_os("DB_PATH") {
         Some(val) => {
             let db_path = val.to_str().unwrap();
@@ -19,10 +20,10 @@ async fn call_trace(Path(hash): Path<String>) -> String {
             } else {
                 tracer.unwrap().trace_transaction(hash).unwrap()
             };
-            serde_json::to_string_pretty(&call_trace).unwrap()
+            Json(call_trace)
         }
         None => {
-            "".to_string()
+            Json(CallTraceWithSource::default())
         }
     }
 }
