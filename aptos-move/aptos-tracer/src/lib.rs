@@ -30,7 +30,7 @@ use codespan::Files;
 use serde::{Deserialize, Serialize};
 use aptos_framework::natives::code::PackageRegistry;
 use aptos_framework::{unzip_metadata, unzip_metadata_str};
-use aptos_logger::error;
+use aptos_logger::{error, info};
 
 use aptos_vm::transaction_metadata::TransactionMetadata;
 use move_binary_format::file_format::{CodeOffset, FunctionDefinitionIndex, TableIndex};
@@ -82,7 +82,9 @@ impl AptosTracer {
                             entry_func.args().to_vec(),
                             txn_metadata.senders(),
                             user_txn.max_gas_amount(),
-                        ).unwrap();
+                        ).map_err(|err| {
+                            format_err!("Error getting call trace for entry function - {:?} : {:?}", entry_func, err)
+                        })?;
 
                         // get all the package names from accounts in call_trace
                         let mut package_names = HashMap::new();
@@ -123,6 +125,7 @@ impl AptosTracer {
                                     self.sentio_endpoint,
                                     entry_func.module().clone().address(),
                                     package.name);
+                                info!("Fetching and compiling modules from {}", url);
                                 let res = sentio_client.get(url).send().await;
                                 match res {
                                     Ok(resp_succeed) => {
@@ -206,7 +209,9 @@ impl SyncAptosTracer {
                             entry_func.args().to_vec(),
                             txn_metadata.senders(),
                             user_txn.max_gas_amount(),
-                        ).unwrap();
+                        ).map_err(|err| {
+                            format_err!("Error getting call trace for entry function - {:?} : {:?}", entry_func, err)
+                        })?;
 
                         let mut package_names = HashMap::new();
                         for account in &call_trace.1 {
@@ -246,6 +251,7 @@ impl SyncAptosTracer {
                                     self.sentio_endpoint,
                                     entry_func.module().clone().address(),
                                     package.name);
+                                info!("Fetching and compiling modules from {}", url);
                                 let res = sentio_client.get(url).send();
                                 match res {
                                     Ok(resp_succeed) => {
@@ -412,13 +418,21 @@ impl CallTraceWithSource {
                     Ok(valid_source_map) => {
                         let loc = valid_source_map.get_code_location(
                             FunctionDefinitionIndex::new(call_trace.fdef_idx as TableIndex),
-                            CodeOffset::from(call_trace.pc)).unwrap();
-                        let start_loc = files.location(file_id, loc.start()).unwrap();
-                        let end_loc = files.location(file_id, loc.end()).unwrap();
-                        call_trace_with_source.location.lines = Range {
-                            start: Position { line: start_loc.line.0 as u32, column: start_loc.column.0 as u32 },
-                            end: Position { line: end_loc.line.0 as u32, column: end_loc.column.0 as u32 }
-                        };
+                            CodeOffset::from(call_trace.pc));
+                        match loc {
+                            Ok(valid_loc) => {
+                                let start_loc = files.location(file_id, valid_loc.start()).unwrap();
+                                let end_loc = files.location(file_id, valid_loc.end()).unwrap();
+                                call_trace_with_source.location.lines = Range {
+                                    start: Position { line: start_loc.line.0 as u32, column: start_loc.column.0 as u32 },
+                                    end: Position { line: end_loc.line.0 as u32, column: end_loc.column.0 as u32 }
+                                };
+                            }
+                            Err(err) => {
+                                error!("Error getting code location for call trace - {:?} : {:?}", call_trace, err);
+                                return call_trace_with_source;
+                            }
+                        }
                     }
                     Err(err) => {
                         error!("Error deserializing into source map: {:?}", err);
@@ -457,7 +471,7 @@ struct CompileResponse {
 #[derive(Clone, Deserialize, Serialize)]
 pub struct PackageCompilation {
     name: String,
-    moduleWithoutCode: Option<String>,
+    moduleWithoutCode: Option<Vec<String>>,
     modules: Vec<ModuleCompilation>,
     dependencies: Option<Vec<PackageCompilation>>,
 }
