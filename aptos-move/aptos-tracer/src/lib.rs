@@ -123,29 +123,36 @@ impl AptosTracer {
                                     self.sentio_endpoint,
                                     entry_func.module().clone().address(),
                                     package.name);
-                                let res = sentio_client.get(url).send().await.unwrap();
-                                let compile_response: CompileResponse = res.json().await.unwrap();
-                                compile_response.result.modules.into_iter().for_each(|module| {
-                                    modules_map.insert( entry_func.module().clone().to_string(), module);
-                                });
-                                match compile_response.result.dependencies {
-                                    None => {}
-                                    Some(dependencies) => {
-                                        dependencies.into_iter().for_each(|dependency| {
-                                            dependency.modules.into_iter().for_each(|module| {
-                                                let account_address = package_names.get(dependency.name.as_str());
-                                                match account_address {
-                                                    None => {}
-                                                    Some(account) => {
-                                                        modules_map.insert(
-                                                            ModuleId::new(
-                                                                AccountAddress::from_str(account.as_str()).unwrap(),
-                                                                Identifier::new(module.name.as_str()).unwrap()).to_string(),
-                                                            module);
-                                                    }
-                                                }
-                                            });
+                                let res = sentio_client.get(url).send().await;
+                                match res {
+                                    Ok(resp_succeed) => {
+                                        let compile_response: CompileResponse = resp_succeed.json().await.unwrap();
+                                        compile_response.result.modules.into_iter().for_each(|module| {
+                                            modules_map.insert( entry_func.module().clone().to_string(), module);
                                         });
+                                        match compile_response.result.dependencies {
+                                            None => {}
+                                            Some(dependencies) => {
+                                                dependencies.into_iter().for_each(|dependency| {
+                                                    dependency.modules.into_iter().for_each(|module| {
+                                                        let account_address = package_names.get(dependency.name.as_str());
+                                                        match account_address {
+                                                            None => {}
+                                                            Some(account) => {
+                                                                modules_map.insert(
+                                                                    ModuleId::new(
+                                                                        AccountAddress::from_str(account.as_str()).unwrap(),
+                                                                        Identifier::new(module.name.as_str()).unwrap()).to_string(),
+                                                                    module);
+                                                            }
+                                                        }
+                                                    });
+                                                });
+                                            }
+                                        }
+                                    }
+                                    Err(error) => {
+                                        error!("Error fetching and compiling modules: {:?}", error);
                                     }
                                 }
                             }
@@ -239,29 +246,36 @@ impl SyncAptosTracer {
                                     self.sentio_endpoint,
                                     entry_func.module().clone().address(),
                                     package.name);
-                                let res = sentio_client.get(url).send().unwrap();
-                                let compile_response: CompileResponse = res.json().unwrap();
-                                compile_response.result.modules.into_iter().for_each(|module| {
-                                    modules_map.insert( entry_func.module().clone().to_string(), module);
-                                });
-                                match compile_response.result.dependencies {
-                                    None => {}
-                                    Some(dependencies) => {
-                                        dependencies.into_iter().for_each(|dependency| {
-                                            dependency.modules.into_iter().for_each(|module| {
-                                                let account_address = package_names.get(dependency.name.as_str());
-                                                match account_address {
-                                                    None => {}
-                                                    Some(account) => {
-                                                        modules_map.insert(
-                                                            ModuleId::new(
-                                                                AccountAddress::from_str(account.as_str()).unwrap(),
-                                                                Identifier::new(module.name.as_str()).unwrap()).to_string(),
-                                                            module);
-                                                    }
-                                                }
-                                            });
+                                let res = sentio_client.get(url).send();
+                                match res {
+                                    Ok(resp_succeed) => {
+                                        let compile_response: CompileResponse = resp_succeed.json().unwrap();
+                                        compile_response.result.modules.into_iter().for_each(|module| {
+                                            modules_map.insert( entry_func.module().clone().to_string(), module);
                                         });
+                                        match compile_response.result.dependencies {
+                                            None => {}
+                                            Some(dependencies) => {
+                                                dependencies.into_iter().for_each(|dependency| {
+                                                    dependency.modules.into_iter().for_each(|module| {
+                                                        let account_address = package_names.get(dependency.name.as_str());
+                                                        match account_address {
+                                                            None => {}
+                                                            Some(account) => {
+                                                                modules_map.insert(
+                                                                    ModuleId::new(
+                                                                        AccountAddress::from_str(account.as_str()).unwrap(),
+                                                                        Identifier::new(module.name.as_str()).unwrap()).to_string(),
+                                                                    module);
+                                                            }
+                                                        }
+                                                    });
+                                                });
+                                            }
+                                        }
+                                    }
+                                    Err(err) => {
+                                        error!("Error fetching and compiling modules: {:?}", err);
                                     }
                                 }
                             }
