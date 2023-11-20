@@ -65,6 +65,7 @@ impl AptosTracer {
     pub async fn trace_transaction(
         &self,
         txn_hash: String,
+        chain_id: u8,
     ) -> Result<CallTraceWithSource> {
         let txn_data = self.debugger.get_transaction_by_hash(txn_hash).await?;
         let txn = txn_data.transaction;
@@ -121,10 +122,11 @@ impl AptosTracer {
                             Some(package) => {
                                 let sentio_client = reqwest::Client::new();
                                 let url = format!(
-                                    "{}/api/v1/move/fetch_and_compile?account={}&package={}",
+                                    "{}/api/v1/move/fetch_and_compile?account={}&package={}&networkId={}",
                                     self.sentio_endpoint,
                                     entry_func.module().clone().address(),
-                                    package.name);
+                                    package.name,
+                                    chain_id);
                                 info!("Fetching and compiling modules from {}", url);
                                 let res = sentio_client.get(url).send().await;
                                 match res {
@@ -192,6 +194,7 @@ impl SyncAptosTracer {
     pub fn trace_transaction(
         &self,
         txn_hash: String,
+        chain_id: u8,
     ) -> Result<CallTraceWithSource> {
         let txn_data = self.debugger.get_transaction_by_hash(txn_hash)?;
         let txn = txn_data.transaction;
@@ -247,10 +250,11 @@ impl SyncAptosTracer {
                             Some(package) => {
                                 let sentio_client = reqwest::blocking::Client::new();
                                 let url = format!(
-                                    "{}/api/v1/move/fetch_and_compile?account={}&package={}",
+                                    "{}/api/v1/move/fetch_and_compile?account={}&package={}&networkId={}",
                                     self.sentio_endpoint,
                                     entry_func.module().clone().address(),
-                                    package.name);
+                                    package.name,
+                                    chain_id);
                                 info!("Fetching and compiling modules from {}", url);
                                 let res = sentio_client.get(url).send();
                                 match res {
