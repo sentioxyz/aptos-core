@@ -69,7 +69,7 @@ impl AptosTracer {
     ) -> Result<CallTraceWithSource> {
         let txn_data = self.debugger.get_transaction_by_hash(txn_hash).await?;
         let txn = txn_data.transaction;
-        let state_view = DebuggerStateView::new(self.debugger.clone(), Version::from(txn_data.version));
+        let state_view = DebuggerStateView::new(self.debugger.clone(), Version::from(txn_data.version - 1));
         let call_traces = match txn {
             Transaction::UserTransaction(user_txn) => {
                 let txn_metadata = TransactionMetadata::new(&user_txn);
@@ -198,7 +198,7 @@ impl SyncAptosTracer {
     ) -> Result<CallTraceWithSource> {
         let txn_data = self.debugger.get_transaction_by_hash(txn_hash)?;
         let txn = txn_data.transaction;
-        let state_view = SyncTracerView::new(self.debugger.clone(), Version::from(txn_data.version));
+        let state_view = SyncTracerView::new(self.debugger.clone(), Version::from(txn_data.version - 1));
         let call_traces = match txn {
             Transaction::UserTransaction(user_txn) => {
                 let txn_metadata = TransactionMetadata::new(&user_txn);
