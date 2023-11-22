@@ -131,7 +131,14 @@ impl AptosTracer {
                                 let res = sentio_client.get(url).send().await;
                                 match res {
                                     Ok(resp_succeed) => {
-                                        let compile_response: CompileResponse = resp_succeed.json().await.unwrap();
+                                        let compile_response: CompileResponse = resp_succeed.json().await.unwrap_or(CompileResponse {
+                                            result: PackageCompilation {
+                                                name: "".to_string(),
+                                                moduleWithoutCode: None,
+                                                modules: vec![],
+                                                dependencies: None,
+                                            }
+                                        });
                                         compile_response.result.modules.into_iter().for_each(|module| {
                                             modules_map.insert( entry_func.module().clone().to_string(), module);
                                         });
@@ -259,7 +266,14 @@ impl SyncAptosTracer {
                                 let res = sentio_client.get(url).send();
                                 match res {
                                     Ok(resp_succeed) => {
-                                        let compile_response: CompileResponse = resp_succeed.json().unwrap();
+                                        let compile_response: CompileResponse = resp_succeed.json().unwrap_or(CompileResponse {
+                                            result: PackageCompilation {
+                                                name: "".to_string(),
+                                                moduleWithoutCode: None,
+                                                modules: vec![],
+                                                dependencies: None,
+                                            }
+                                        });
                                         compile_response.result.modules.into_iter().for_each(|module| {
                                             modules_map.insert( entry_func.module().clone().to_string(), module);
                                         });
