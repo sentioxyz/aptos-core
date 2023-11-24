@@ -1408,50 +1408,97 @@ impl AptosVM {
     }
 
     pub fn get_call_trace(
+        &self,
         state_view: &impl StateView,
-        module_id: ModuleId,
-        func_name: Identifier,
-        type_args: Vec<TypeTag>,
-        arguments: Vec<Vec<u8>>,
+        txn_payload: &TransactionPayload,
         senders: Vec<AccountAddress>,
         gas_budget: u64,
     ) -> Result<CallTraces> {
-        let vm = AptosVM::new_from_state_view(state_view);
         let log_context = AdapterLogSchema::new(state_view.id(), 0);
         let mut gas_meter =
             StandardGasMeter::new(
                 StandardGasAlgebra::new(
-                    vm.0.get_gas_feature_version(),
-                    vm.0.get_gas_parameters(&log_context)?.vm.clone(),
-                    vm.0.get_storage_gas_parameters(&log_context)?.clone(),
+                    self.0.get_gas_feature_version(),
+                    self.0.get_gas_parameters(&log_context)?.vm.clone(),
+                    self.0.get_storage_gas_parameters(&log_context)?.clone(),
                     gas_budget,
                 ),
             );
-        let resolver = vm.as_move_resolver(state_view);
-        let mut session = vm.new_session(&resolver, SessionId::Void);
-        let function = session.load_function(
-            &module_id,
-            &func_name,
-            &type_args,
-        )?;
-        let struct_constructors = vm
-            .0
-            .get_features()
-            .is_enabled(FeatureFlag::STRUCT_CONSTRUCTORS);
-        let args = verifier::transaction_arg_validation::validate_combine_signer_and_txn_args(
-            &mut session,
-            senders,
-            arguments,
-            &function,
-            struct_constructors,
-        )?;
-        let call_trace_res = session.call_trace(&module_id, &func_name, type_args, args, &mut gas_meter);
-        match call_trace_res {
-            Ok(call_trace) => {
-                Ok(call_trace)
+        let resolver = self.as_move_resolver(state_view);
+        let mut session = self.new_session(&resolver, SessionId::Void);
+        match txn_payload {
+            TransactionPayload::Script(script) => {
+                let loaded_func =
+                    session.load_script(script.code(), script.ty_args().to_vec())?;
+                // Gerardo: consolidate the extended validation to verifier.
+                verifier::event_validation::verify_no_event_emission_in_script(
+                    script.code(),
+                    session.get_vm_config().max_binary_format_version,
+                )?;
+
+                let args =
+                    verifier::transaction_arg_validation::validate_combine_signer_and_txn_args(
+                        &mut session,
+                        senders,
+                        convert_txn_args(script.args()),
+                        &loaded_func,
+                        self.0
+                            .get_features()
+                            .is_enabled(FeatureFlag::STRUCT_CONSTRUCTORS),
+                    )?;
+                let call_trace_res = session.call_trace_from_script(
+                    script.code(),
+                    script.ty_args().to_vec(),
+                    args,
+                    &mut gas_meter,
+                );
+                match call_trace_res {
+                    Ok(call_trace) => {
+                        Ok(call_trace)
+                    }
+                    Err(err) => {
+                        Err(anyhow::Error::msg(err.into_vm_status()))
+                    }
+                }
             }
-            Err(err) => {
-                Err(anyhow::Error::msg(err.into_vm_status()))
+            TransactionPayload::ModuleBundle(_) => {
+                unimplemented!()
+            }
+            TransactionPayload::EntryFunction(entry_func) => {
+                let module_id = entry_func.module().clone();
+                let func_name = entry_func.function().to_owned();
+                let type_args = entry_func.ty_args().to_vec();
+                let arguments = entry_func.args().to_vec();
+
+                let function = session.load_function(
+                    &module_id,
+                    &func_name,
+                    &type_args,
+                )?;
+                let struct_constructors = self
+                    .0
+                    .get_features()
+                    .is_enabled(FeatureFlag::STRUCT_CONSTRUCTORS);
+                let args = verifier::transaction_arg_validation::validate_combine_signer_and_txn_args(
+                    &mut session,
+                    senders,
+                    arguments,
+                    &function,
+                    struct_constructors,
+                )?;
+                let call_trace_res = session.call_trace(
+                    &module_id, &func_name, type_args, args, &mut gas_meter);
+                match call_trace_res {
+                    Ok(call_trace) => {
+                        Ok(call_trace)
+                    }
+                    Err(err) => {
+                        Err(anyhow::Error::msg(err.into_vm_status()))
+                    }
+                }
+            }
+            TransactionPayload::Multisig(_) => {
+                unimplemented!()
             }
         }
     }

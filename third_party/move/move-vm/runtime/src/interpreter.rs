@@ -100,7 +100,6 @@ impl Interpreter {
     }
 
     pub(crate) fn call_trace(
-        module: &ModuleId,
         function: Arc<Function>,
         ty_args: Vec<Type>,
         args: Vec<Value>,
@@ -115,7 +114,7 @@ impl Interpreter {
             paranoid_type_checks: loader.vm_config().paranoid_type_checks,
         };
         interpreter.call_trace_internal(
-            module, loader, data_store, gas_meter, extensions, function, ty_args, args,
+            loader, data_store, gas_meter, extensions, function, ty_args, args,
         )
     }
 
@@ -286,7 +285,6 @@ impl Interpreter {
 
     fn call_trace_internal(
         mut self,
-        module: &ModuleId,
         loader: &Loader,
         data_store: &mut TransactionDataCache,
         gas_meter: &mut impl GasMeter,
@@ -317,7 +315,7 @@ impl Interpreter {
             from_module_id: current_frame.function.module_id().unwrap().to_string(),
             pc: current_frame.pc,
             fdef_idx: current_frame.function.index().0 as u16,
-            module_id: module.to_string(),
+            module_id: current_frame.function.module_id().unwrap().to_string(),
             func_name: current_frame.function.name().to_string(),
             inputs: args_1.into_iter().zip(current_frame.function.parameter_types()).map(|(value, ty)| {
                 let (ty, value) = match ty {

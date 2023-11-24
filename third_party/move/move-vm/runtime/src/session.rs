@@ -113,6 +113,23 @@ impl<'r, 'l> Session<'r, 'l> {
         )
     }
 
+    pub fn call_trace_from_script(
+        &mut self,
+        script: impl Borrow<[u8]>,
+        ty_args: Vec<TypeTag>,
+        args: Vec<impl Borrow<[u8]>>,
+        gas_meter: &mut impl GasMeter,
+    ) -> VMResult<CallTraces> {
+        self.move_vm.runtime.call_trace_from_script(
+            script,
+            ty_args,
+            args,
+            &mut self.data_cache,
+            gas_meter,
+            &mut self.native_extensions,
+        )
+    }
+
     pub fn call_trace(
         &mut self,
         module: &ModuleId,

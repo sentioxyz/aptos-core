@@ -73,107 +73,107 @@ impl AptosTracer {
         let call_traces = match txn {
             Transaction::UserTransaction(user_txn) => {
                 let txn_metadata = TransactionMetadata::new(&user_txn);
-                match user_txn.payload() {
-                    TransactionPayload::EntryFunction(entry_func) => {
-                        let call_trace = AptosVM::get_call_trace(
-                            &state_view,
-                            entry_func.module().clone(),
-                            entry_func.function().to_owned(),
-                            entry_func.ty_args().to_vec(),
-                            entry_func.args().to_vec(),
-                            txn_metadata.senders(),
-                            user_txn.max_gas_amount(),
-                        ).map_err(|err| {
-                            format_err!("Error getting call trace for entry function - {:?} : {:?}", entry_func, err)
-                        })?;
+                let vm = AptosVM::new_from_state_view(&state_view);
+                let call_trace = vm.get_call_trace(
+                    &state_view,
+                    user_txn.payload(),
+                    txn_metadata.senders(),
+                    user_txn.max_gas_amount(),
+                ).map_err(|err| {
+                    format_err!("Error getting call trace for txn_hash - {:?} : {:?}", txn_data.info.to_string(), err)
+                })?;
 
-                        // get all the package names from accounts in call_trace
-                        let mut package_names = HashMap::new();
-                        for account in &call_trace.1 {
-                            let package_registry = self.debugger.get_package_registry(
-                                AccountAddress::from_str(account.as_str()).unwrap(), Version::from(txn_data.version)).await.unwrap();
-                            match package_registry {
-                                None => {}
-                                Some(packages) => {
-                                    for package in packages.packages.into_iter() {
-                                        package_names.insert(package.name.clone(), account.to_string());
-                                    }
-                                }
+                // get all the package names from accounts in call_trace
+                let mut package_names = HashMap::new();
+                for account in &call_trace.1 {
+                    let package_registry = self.debugger.get_package_registry(
+                        AccountAddress::from_str(account.as_str()).unwrap(), Version::from(txn_data.version)).await.unwrap();
+                    match package_registry {
+                        None => {}
+                        Some(packages) => {
+                            for package in packages.packages.into_iter() {
+                                package_names.insert(package.name.clone(), account.to_string());
                             }
                         }
+                    }
+                }
 
-                        let package_registry = self.debugger.get_package_registry(
-                            *entry_func.module().clone().address(), Version::from(txn_data.version)).await.unwrap();
-                        let matched_package = match package_registry {
-                            None => {None}
-                            Some(registry) => {
-                                // find the module in the package registry
-                                registry.packages.into_iter().find(|package| {
-                                    package.modules.clone().into_iter().find(|module| {
-                                        module.name.as_str() == entry_func.module().clone().name().as_str()
-                                    }).is_some()
-                                })
-                            }
-                        };
+                let module_id = match user_txn.payload() {
+                    TransactionPayload::EntryFunction(entry_func) => Some(entry_func.module().clone()),
+                    _ => None,
+                };
+                let mut modules_map = HashMap::new();
+                if !module_id.is_none() {
+                    let unwrapped_module_id = module_id.unwrap();
+                    let package_registry = self.debugger.get_package_registry(
+                        *unwrapped_module_id.clone().address(), Version::from(txn_data.version)).await.unwrap();
+                    let matched_package = match package_registry {
+                        None => {None}
+                        Some(registry) => {
+                            // find the module in the package registry
+                            registry.packages.into_iter().find(|package| {
+                                package.modules.clone().into_iter().find(|module| {
+                                    module.name.as_str() == unwrapped_module_id.clone().name().as_str()
+                                }).is_some()
+                            })
+                        }
+                    };
 
-                        let mut modules_map = HashMap::new();
-                        match matched_package {
-                            None => {}
-                            Some(package) => {
-                                let sentio_client = reqwest::Client::new();
-                                let url = format!(
-                                    "{}/api/v1/move/fetch_and_compile?account={}&package={}&networkId={}",
-                                    self.sentio_endpoint,
-                                    entry_func.module().clone().address(),
-                                    package.name,
-                                    chain_id);
-                                info!("Fetching and compiling modules from {}", url);
-                                let res = sentio_client.get(url).send().await;
-                                match res {
-                                    Ok(resp_succeed) => {
-                                        let compile_response: CompileResponse = resp_succeed.json().await.unwrap_or(CompileResponse {
-                                            result: PackageCompilation {
-                                                name: "".to_string(),
-                                                moduleWithoutCode: None,
-                                                modules: vec![],
-                                                dependencies: None,
-                                            }
-                                        });
-                                        compile_response.result.modules.into_iter().for_each(|module| {
-                                            modules_map.insert( entry_func.module().clone().to_string(), module);
-                                        });
-                                        match compile_response.result.dependencies {
-                                            None => {}
-                                            Some(dependencies) => {
-                                                dependencies.into_iter().for_each(|dependency| {
-                                                    dependency.modules.into_iter().for_each(|module| {
-                                                        let account_address = package_names.get(dependency.name.as_str());
-                                                        match account_address {
-                                                            None => {}
-                                                            Some(account) => {
-                                                                modules_map.insert(
-                                                                    ModuleId::new(
-                                                                        AccountAddress::from_str(account.as_str()).unwrap(),
-                                                                        Identifier::new(module.name.as_str()).unwrap()).to_string(),
-                                                                    module);
-                                                            }
+                    match matched_package {
+                        None => {}
+                        Some(package) => {
+                            let sentio_client = reqwest::Client::new();
+                            let url = format!(
+                                "{}/api/v1/move/fetch_and_compile?account={}&package={}&networkId={}",
+                                self.sentio_endpoint,
+                                unwrapped_module_id.clone().address(),
+                                package.name,
+                                chain_id);
+                            info!("Fetching and compiling modules from {}", url);
+                            let res = sentio_client.get(url).send().await;
+                            match res {
+                                Ok(resp_succeed) => {
+                                    let compile_response: CompileResponse = resp_succeed.json().await.unwrap_or(CompileResponse {
+                                        result: PackageCompilation {
+                                            name: "".to_string(),
+                                            moduleWithoutCode: None,
+                                            modules: vec![],
+                                            dependencies: None,
+                                        }
+                                    });
+                                    compile_response.result.modules.into_iter().for_each(|module| {
+                                        modules_map.insert( unwrapped_module_id.clone().to_string(), module);
+                                    });
+                                    match compile_response.result.dependencies {
+                                        None => {}
+                                        Some(dependencies) => {
+                                            dependencies.into_iter().for_each(|dependency| {
+                                                dependency.modules.into_iter().for_each(|module| {
+                                                    let account_address = package_names.get(dependency.name.as_str());
+                                                    match account_address {
+                                                        None => {}
+                                                        Some(account) => {
+                                                            modules_map.insert(
+                                                                ModuleId::new(
+                                                                    AccountAddress::from_str(account.as_str()).unwrap(),
+                                                                    Identifier::new(module.name.as_str()).unwrap()).to_string(),
+                                                                module);
                                                         }
-                                                    });
+                                                    }
                                                 });
-                                            }
+                                            });
                                         }
                                     }
-                                    Err(error) => {
-                                        error!("Error fetching and compiling modules: {:?}", error);
-                                    }
+                                }
+                                Err(error) => {
+                                    error!("Error fetching and compiling modules: {:?}", error);
                                 }
                             }
                         }
-
-                        CallTraceWithSource::from_modules(call_trace.clone().root().unwrap(), &modules_map)
-                    },
-                    _ => CallTraceWithSource::default(),
+                    }
                 }
+
+                CallTraceWithSource::from_modules(call_trace.clone().root().unwrap(), &modules_map)
             },
             _ => CallTraceWithSource::default(),
         };
@@ -209,106 +209,107 @@ impl SyncAptosTracer {
         let call_traces = match txn {
             Transaction::UserTransaction(user_txn) => {
                 let txn_metadata = TransactionMetadata::new(&user_txn);
-                match user_txn.payload() {
-                    TransactionPayload::EntryFunction(entry_func) => {
-                        let call_trace = AptosVM::get_call_trace(
-                            &state_view,
-                            entry_func.module().clone(),
-                            entry_func.function().to_owned(),
-                            entry_func.ty_args().to_vec(),
-                            entry_func.args().to_vec(),
-                            txn_metadata.senders(),
-                            user_txn.max_gas_amount(),
-                        ).map_err(|err| {
-                            format_err!("Error getting call trace for entry function - {:?} : {:?}", entry_func, err)
-                        })?;
+                let vm = AptosVM::new_from_state_view(&state_view);
+                let call_trace = vm.get_call_trace(
+                    &state_view,
+                    user_txn.payload(),
+                    txn_metadata.senders(),
+                    user_txn.max_gas_amount(),
+                ).map_err(|err| {
+                    format_err!("Error getting call trace for txn_hash - {:?} : {:?}", txn_data.info.to_string(), err)
+                })?;
 
-                        let mut package_names = HashMap::new();
-                        for account in &call_trace.1 {
-                            let package_registry = self.debugger.get_package_registry(
-                                AccountAddress::from_str(account.as_str()).unwrap(), Version::from(txn_data.version)).unwrap();
-                            match package_registry {
-                                None => {}
-                                Some(packages) => {
-                                    for package in packages.packages.into_iter() {
-                                        package_names.insert(package.name.clone(), account.to_string());
-                                    }
-                                }
+                // get all the package names from accounts in call_trace
+                let mut package_names = HashMap::new();
+                for account in &call_trace.1 {
+                    let package_registry = self.debugger.get_package_registry(
+                        AccountAddress::from_str(account.as_str()).unwrap(), Version::from(txn_data.version)).unwrap();
+                    match package_registry {
+                        None => {}
+                        Some(packages) => {
+                            for package in packages.packages.into_iter() {
+                                package_names.insert(package.name.clone(), account.to_string());
                             }
                         }
+                    }
+                }
 
-                        let package_registry = self.debugger.get_package_registry(
-                            *entry_func.module().clone().address(), Version::from(txn_data.version)).unwrap();
-                        let matched_package = match package_registry {
-                            None => {None}
-                            Some(registry) => {
-                                // find the module in the package registry
-                                registry.packages.into_iter().find(|package| {
-                                    package.modules.clone().into_iter().find(|module| {
-                                        module.name.as_str() == entry_func.module().clone().name().as_str()
-                                    }).is_some()
-                                })
-                            }
-                        };
+                let module_id = match user_txn.payload() {
+                    TransactionPayload::EntryFunction(entry_func) => Some(entry_func.module().clone()),
+                    _ => None,
+                };
+                let mut modules_map = HashMap::new();
+                if !module_id.is_none() {
+                    let unwrapped_module_id = module_id.unwrap();
+                    let package_registry = self.debugger.get_package_registry(
+                        *unwrapped_module_id.clone().address(), Version::from(txn_data.version)).unwrap();
+                    let matched_package = match package_registry {
+                        None => {None}
+                        Some(registry) => {
+                            // find the module in the package registry
+                            registry.packages.into_iter().find(|package| {
+                                package.modules.clone().into_iter().find(|module| {
+                                    module.name.as_str() == unwrapped_module_id.clone().name().as_str()
+                                }).is_some()
+                            })
+                        }
+                    };
 
-                        let mut modules_map = HashMap::new();
-                        match matched_package {
-                            None => {}
-                            Some(package) => {
-                                let sentio_client = reqwest::blocking::Client::new();
-                                let url = format!(
-                                    "{}/api/v1/move/fetch_and_compile?account={}&package={}&networkId={}",
-                                    self.sentio_endpoint,
-                                    entry_func.module().clone().address(),
-                                    package.name,
-                                    chain_id);
-                                info!("Fetching and compiling modules from {}", url);
-                                let res = sentio_client.get(url).send();
-                                match res {
-                                    Ok(resp_succeed) => {
-                                        let compile_response: CompileResponse = resp_succeed.json().unwrap_or(CompileResponse {
-                                            result: PackageCompilation {
-                                                name: "".to_string(),
-                                                moduleWithoutCode: None,
-                                                modules: vec![],
-                                                dependencies: None,
-                                            }
-                                        });
-                                        compile_response.result.modules.into_iter().for_each(|module| {
-                                            modules_map.insert( entry_func.module().clone().to_string(), module);
-                                        });
-                                        match compile_response.result.dependencies {
-                                            None => {}
-                                            Some(dependencies) => {
-                                                dependencies.into_iter().for_each(|dependency| {
-                                                    dependency.modules.into_iter().for_each(|module| {
-                                                        let account_address = package_names.get(dependency.name.as_str());
-                                                        match account_address {
-                                                            None => {}
-                                                            Some(account) => {
-                                                                modules_map.insert(
-                                                                    ModuleId::new(
-                                                                        AccountAddress::from_str(account.as_str()).unwrap(),
-                                                                        Identifier::new(module.name.as_str()).unwrap()).to_string(),
-                                                                    module);
-                                                            }
+                    match matched_package {
+                        None => {}
+                        Some(package) => {
+                            let sentio_client = reqwest::blocking::Client::new();
+                            let url = format!(
+                                "{}/api/v1/move/fetch_and_compile?account={}&package={}&networkId={}",
+                                self.sentio_endpoint,
+                                unwrapped_module_id.clone().address(),
+                                package.name,
+                                chain_id);
+                            info!("Fetching and compiling modules from {}", url);
+                            let res = sentio_client.get(url).send();
+                            match res {
+                                Ok(resp_succeed) => {
+                                    let compile_response: CompileResponse = resp_succeed.json().unwrap_or(CompileResponse {
+                                        result: PackageCompilation {
+                                            name: "".to_string(),
+                                            moduleWithoutCode: None,
+                                            modules: vec![],
+                                            dependencies: None,
+                                        }
+                                    });
+                                    compile_response.result.modules.into_iter().for_each(|module| {
+                                        modules_map.insert( unwrapped_module_id.clone().to_string(), module);
+                                    });
+                                    match compile_response.result.dependencies {
+                                        None => {}
+                                        Some(dependencies) => {
+                                            dependencies.into_iter().for_each(|dependency| {
+                                                dependency.modules.into_iter().for_each(|module| {
+                                                    let account_address = package_names.get(dependency.name.as_str());
+                                                    match account_address {
+                                                        None => {}
+                                                        Some(account) => {
+                                                            modules_map.insert(
+                                                                ModuleId::new(
+                                                                    AccountAddress::from_str(account.as_str()).unwrap(),
+                                                                    Identifier::new(module.name.as_str()).unwrap()).to_string(),
+                                                                module);
                                                         }
-                                                    });
+                                                    }
                                                 });
-                                            }
+                                            });
                                         }
                                     }
-                                    Err(err) => {
-                                        error!("Error fetching and compiling modules: {:?}", err);
-                                    }
+                                }
+                                Err(error) => {
+                                    error!("Error fetching and compiling modules: {:?}", error);
                                 }
                             }
                         }
-
-                        CallTraceWithSource::from_modules(call_trace.clone().root().unwrap(), &modules_map)
-                    },
-                    _ => CallTraceWithSource::default(),
+                    }
                 }
+
+                CallTraceWithSource::from_modules(call_trace.clone().root().unwrap(), &modules_map)
             },
             _ => CallTraceWithSource::default(),
         };
