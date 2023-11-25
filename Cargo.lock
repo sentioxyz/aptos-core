@@ -3596,6 +3596,7 @@ dependencies = [
  "aptos-state-view",
  "aptos-storage-interface",
  "aptos-types",
+ "aptos-utils",
  "aptos-validator-interface",
  "aptos-vm",
  "aptos-vm-logging",

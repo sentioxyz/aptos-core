@@ -2,7 +2,8 @@
 // Parts of the project are originally copyright © Meta Platforms, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-use anyhow::{bail, ensure, Result};
+use std::collections::BTreeMap;
+use anyhow::{bail, ensure, format_err, Result};
 use aptos_config::config::{
     RocksdbConfigs, BUFFERED_STATE_TARGET_ITEMS, DEFAULT_MAX_NUM_NODES_PER_LRU_CACHE_SHARD,
     NO_OP_STORAGE_PRUNER_CONFIG,
@@ -15,11 +16,17 @@ use aptos_types::{
     state_store::{state_key::StateKey, state_key_prefix::StateKeyPrefix, state_value::StateValue},
     transaction::{Transaction, TransactionInfo, Version},
 };
-use std::{path::Path, sync::Arc};
+use std::sync::Arc;
 use std::str::FromStr;
 use aptos_framework::natives::code::PackageRegistry;
-use aptos_rest_client::aptos_api_types::TransactionOnChainData;
-use aptos_types::access_path::AccessPath;
+use aptos_logger::error;
+use aptos_rest_client::aptos_api_types::{ResourceGroup, TransactionOnChainData};
+use aptos_storage_interface::state_view::DbStateViewAtVersion;
+use aptos_types::access_path::{AccessPath,Path};
+use aptos_types::state_store::state_key::StateKeyInner;
+use aptos_vm::move_vm_ext::AptosMoveResolver;
+use aptos_utils::aptos_try;
+use aptos_vm::data_cache::AsMoveResolver;
 
 use move_core_types::language_storage::StructTag;
 use crate::sync_tracer_view::AptosTracerInterface;
@@ -27,7 +34,7 @@ use crate::sync_tracer_view::AptosTracerInterface;
 pub struct DBTracerInterface(Arc<dyn DbReader>);
 
 impl DBTracerInterface {
-    pub fn open<P: AsRef<Path> + Clone>(db_root_path: P) -> Result<Self> {
+    pub fn open<P: AsRef<std::path::Path> + Clone>(db_root_path: P) -> Result<Self> {
         Ok(Self(Arc::new(AptosDB::open(
             db_root_path,
             true,
@@ -50,17 +57,85 @@ impl AptosTracerInterface for DBTracerInterface {
         let mut iter = self
             .0
             .get_prefixed_state_value_iterator(&key_prefix, None, version)?;
-        let kvs = iter
-            .by_ref()
-            .take(MAX_REQUEST_LIMIT as usize)
-            .collect::<Result<_>>()?;
+
         if iter.next().is_some() {
             bail!(
                 "Too many state items under state key prefix {:?}.",
                 key_prefix
             );
         }
-        AccountState::from_access_paths_and_values(account, &kvs)
+
+        let mut resource_iter = iter
+            .filter_map(|res| match res {
+                Ok((k, v)) => match k.inner() {
+                    StateKeyInner::AccessPath(AccessPath { address: _, path }) => {
+                        match Path::try_from(path.as_slice()) {
+                            Ok(Path::Resource(struct_tag)) => {
+                                Some(Ok((struct_tag, v.into_bytes())))
+                            }
+                            // TODO: Consider expanding to Path::Resource
+                            Ok(Path::ResourceGroup(struct_tag)) => {
+                                Some(Ok((struct_tag, v.into_bytes())))
+                            }
+                            Ok(Path::Code(_)) => None,
+                            Err(e) => Some(Err(anyhow::Error::from(e))),
+                        }
+                    }
+                    _ => {
+                        error!("storage prefix scan return inconsistent key ({:?}) with expected key prefix ({:?}).", k, StateKeyPrefix::from(account));
+                        Some(Err(format_err!( "storage prefix scan return inconsistent key ({:?})", k )))
+                    }
+                },
+                Err(e) => Some(Err(e)),
+            })
+            .take(MAX_REQUEST_LIMIT as usize + 1);
+        let kvs = resource_iter
+            .by_ref()
+            .take(MAX_REQUEST_LIMIT as usize)
+            .collect::<Result<Vec<(StructTag, Vec<u8>)>>>()?;
+
+        let state_view = self.0.state_view_at_version(Some(version))?;
+
+        // Extract resources from resource groups and flatten into all resources
+        let kvs = kvs
+            .into_iter()
+            .map(|(key, value)| {
+                let is_resource_group =
+                    |resolver: &dyn AptosMoveResolver, struct_tag: &StructTag| -> bool {
+                        aptos_try!({
+                            let md = aptos_framework::get_metadata(
+                                &resolver.get_module_metadata(&struct_tag.module_id()),
+                            )?;
+                            md.struct_attributes
+                                .get(struct_tag.name.as_ident_str().as_str())?
+                                .iter()
+                                .find(|attr| attr.is_resource_group())?;
+                            Some(())
+                        })
+                            .is_some()
+                    };
+
+                let resolver = state_view.as_move_resolver();
+                if is_resource_group(&resolver, &key) {
+                    // An error here means a storage invariant has been violated
+                    bcs::from_bytes::<ResourceGroup>(&value)
+                        .map(|map| {
+                            map.into_iter()
+                                .map(|(key, value)| (key, value))
+                                .collect::<Vec<_>>()
+                        })
+                        .map_err(|e| e.into())
+                } else {
+                    Ok(vec![(key, value)])
+                }
+            })
+            .collect::<Result<Vec<Vec<(StructTag, Vec<u8>)>>>>()?
+            .into_iter()
+            .flatten()
+            .map(|(key, value)| (key.access_vector(), value))
+            .collect::<BTreeMap<_, _>>();
+
+        Ok(Some(AccountState::new(account, kvs)))
     }
 
     fn get_state_value_by_version(
