@@ -322,32 +322,32 @@ impl SyncAptosTracer {
 ///
 /// This is a representation of the debug call trace
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CallTraceWithSource {
-    pub from_module_id: String,
-    pub module_id: String,
-    pub func_name: String,
+    pub from: String,
+    pub to: String,
+    pub contract_name: String,
+    pub function_name: String,
     pub inputs: Vec<String>,
     pub return_value: Vec<String>,
     pub type_args: Vec<String>,
     pub calls: Vec<CallTraceWithSource>,
-    pub location: Location,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub location: Option<Location>,
 }
 
 impl CallTraceWithSource {
     pub fn default() -> Self {
         CallTraceWithSource {
-            from_module_id: "".to_string(),
-            module_id: "".to_string(),
-            func_name: "".to_string(),
+            from: "".to_string(),
+            to: "".to_string(),
+            contract_name: "".to_string(),
+            function_name: "".to_string(),
             inputs: vec![],
             return_value: vec![],
             type_args: vec![],
             calls: vec![],
-            location: Location {
-                account: "".to_string(),
-                module: "".to_string(),
-                lines: Range { start: Position { line: 0, column: 0 }, end: Position { line: 0, column: 0 } },
-            },
+            location: None,
         }
     }
     
@@ -355,22 +355,22 @@ impl CallTraceWithSource {
         let mut split_module = call_trace.from_module_id.split("::");
         let account = split_module.next();
         let module_name  = split_module.next();
+        let mut split_to_module = call_trace.module_id.split("::");
+        let to_account = split_to_module.next();
+        let to_module_name  = split_to_module.next();
         let mut files = Files::new();
         let mut call_trace_with_source = CallTraceWithSource {
-            from_module_id: call_trace.from_module_id.to_string(),
-            module_id: call_trace.module_id.to_string(),
-            func_name: call_trace.func_name.to_string(),
+            from: account.unwrap().to_string(),
+            contract_name: module_name.unwrap().to_string(),
+            to: to_account.unwrap().to_string(),
+            function_name: format!("{}::{}", to_module_name.unwrap().to_string(), call_trace.func_name),
             inputs: call_trace.inputs.clone(),
             return_value: call_trace.outputs.clone(),
             type_args: call_trace.type_args.clone(),
             calls: call_trace.sub_traces.clone().0.into_iter().map(|sub_trace| {
                 CallTraceWithSource::from(sub_trace, package_registries)
             }).collect(),
-            location: Location {
-                account: account.unwrap().to_string(),
-                module: module_name.unwrap().to_string(),
-                lines: Range { start: Position { line: 0, column: 0 }, end: Position { line: 0, column: 0 } },
-            },
+            location: None,
         };
         package_registries.get(account.unwrap()).unwrap().packages.clone().into_iter().for_each(|package| {
             let matched_module = package.modules.into_iter().find(|module| {
@@ -391,10 +391,13 @@ impl CallTraceWithSource {
                         CodeOffset::from(call_trace.pc)).unwrap();
                     let start_loc = files.location(file_id, loc.start()).unwrap();
                     let end_loc = files.location(file_id, loc.end()).unwrap();
-                    call_trace_with_source.location.lines = Range {
-                        start: Position { line: start_loc.line.0 as u32, column: start_loc.column.0 as u32 },
-                        end: Position { line: end_loc.line.0 as u32, column: end_loc.column.0 as u32 }
-                    };
+                    call_trace_with_source.location = Some(Location {
+                        account: account.unwrap().to_string(),
+                        module: module_name.unwrap().to_string(),
+                        lines: Range {
+                            start: Position { line: start_loc.line.0 as u32, column: start_loc.column.0 as u32 },
+                            end: Position { line: end_loc.line.0 as u32, column: end_loc.column.0 as u32 }
+                    }});
                 }
             }
         });
@@ -405,22 +408,22 @@ impl CallTraceWithSource {
         let mut split_module = call_trace.from_module_id.split("::");
         let account = split_module.next();
         let module_name  = split_module.next();
+        let mut split_to_module = call_trace.module_id.split("::");
+        let to_account = split_to_module.next();
+        let to_module_name  = split_to_module.next();
         let mut files = Files::new();
         let mut call_trace_with_source = CallTraceWithSource {
-            from_module_id: call_trace.from_module_id.to_string(),
-            module_id: call_trace.module_id.to_string(),
-            func_name: call_trace.func_name.to_string(),
+            from: account.unwrap().to_string(),
+            contract_name: module_name.unwrap().to_string(),
+            to: to_account.unwrap().to_string(),
+            function_name: format!("{}::{}", to_module_name.unwrap().to_string(), call_trace.func_name),
             inputs: call_trace.inputs.clone(),
             return_value: call_trace.outputs.clone(),
             type_args: call_trace.type_args.clone(),
             calls: call_trace.sub_traces.clone().0.into_iter().map(|sub_trace| {
                 CallTraceWithSource::from_modules(sub_trace, modules_map)
             }).collect(),
-            location: Location {
-                account: account.unwrap().to_string(),
-                module: module_name.unwrap().to_string(),
-                lines: Range { start: Position { line: 0, column: 0 }, end: Position { line: 0, column: 0 } },
-            },
+            location: None,
         };
         let module = modules_map.get(call_trace.from_module_id.as_str());
         match module {
@@ -442,10 +445,13 @@ impl CallTraceWithSource {
                             Ok(valid_loc) => {
                                 let start_loc = files.location(file_id, valid_loc.start()).unwrap();
                                 let end_loc = files.location(file_id, valid_loc.end()).unwrap();
-                                call_trace_with_source.location.lines = Range {
-                                    start: Position { line: start_loc.line.0 as u32, column: start_loc.column.0 as u32 },
-                                    end: Position { line: end_loc.line.0 as u32, column: end_loc.column.0 as u32 }
-                                };
+                                call_trace_with_source.location = Some(Location {
+                                    account: account.unwrap().to_string(),
+                                    module: module_name.unwrap().to_string(),
+                                    lines: Range {
+                                        start: Position { line: start_loc.line.0 as u32, column: start_loc.column.0 as u32 },
+                                        end: Position { line: end_loc.line.0 as u32, column: end_loc.column.0 as u32 }
+                                }});
                             }
                             Err(err) => {
                                 error!("Error getting code location for call trace - {:?} : {:?}", call_trace, err);

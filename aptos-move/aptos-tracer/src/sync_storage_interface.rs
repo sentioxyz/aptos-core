@@ -21,6 +21,7 @@ use std::str::FromStr;
 use aptos_framework::natives::code::PackageRegistry;
 use aptos_logger::error;
 use aptos_rest_client::aptos_api_types::{ResourceGroup, TransactionOnChainData};
+use aptos_state_view::TStateView;
 use aptos_storage_interface::state_view::DbStateViewAtVersion;
 use aptos_types::access_path::{AccessPath,Path};
 use aptos_types::state_store::state_key::StateKeyInner;
@@ -143,7 +144,8 @@ impl AptosTracerInterface for DBTracerInterface {
         state_key: &StateKey,
         version: Version,
     ) -> Result<Option<StateValue>> {
-        self.0.get_state_value_by_version(state_key, version)
+        let state_view = self.0.state_view_at_version(Some(version))?;
+        return state_view.get_state_value(state_key);
     }
 
     fn get_committed_transactions(

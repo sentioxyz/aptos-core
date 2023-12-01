@@ -33,10 +33,11 @@ async fn main() -> Result<()> {
         Target::Rest { endpoint, txn_hash, chain_id } => {
             let tracer = AptosTracer::rest_client(Client::new(Url::parse(&endpoint)?), args.sentio_endpoint)?;
             println!(
-                "{:#?}",
-                tracer
+                "{}",
+                serde_json::to_string_pretty(
+                    &tracer
                     .trace_transaction(txn_hash, chain_id)
-                    .await?
+                    .await?)?
             );
             Ok(())
         },

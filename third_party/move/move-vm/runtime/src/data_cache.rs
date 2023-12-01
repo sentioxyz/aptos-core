@@ -186,7 +186,8 @@ impl<'r> TransactionDataCache<'r> {
                     PartialVMError::new(StatusCode::STORAGE_ERROR).with_message(msg)
                 })?;
             load_res = Some(NumBytes::new(bytes_loaded as u64));
-
+            let msg =
+                format!("Begin to deserialize resource {} at {}!", ty_tag, addr);
             let gv = match data {
                 Some(blob) => {
                     let val = match Value::simple_deserialize(&blob, &ty_layout) {
