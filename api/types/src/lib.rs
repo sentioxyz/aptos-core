@@ -22,7 +22,6 @@ mod table;
 pub mod transaction;
 mod view;
 mod wrappers;
-pub mod call_trace;
 
 pub use account::AccountData;
 pub use address::Address;

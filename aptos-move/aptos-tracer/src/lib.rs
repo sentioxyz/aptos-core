@@ -5,6 +5,7 @@ mod config;
 mod server;
 mod sync_tracer_view;
 mod sync_storage_interface;
+mod converter;
 
 pub use server::run_debugger_server;
 pub use config::DebuggerServerConfig;
@@ -28,6 +29,7 @@ use std::collections::HashMap;
 use std::str::FromStr;
 use codespan::Files;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use aptos_framework::natives::code::PackageRegistry;
 use aptos_framework::{unzip_metadata, unzip_metadata_str};
 use aptos_logger::{error, info};
@@ -39,6 +41,7 @@ use move_core_types::account_address::AccountAddress;
 use move_core_types::call_trace::{InternalCallTrace};
 use move_core_types::identifier::Identifier;
 use move_core_types::language_storage::ModuleId;
+use crate::converter::move_value_to_json;
 use crate::sync_storage_interface::DBTracerInterface;
 use crate::sync_tracer_view::{AptosTracerInterface, SyncTracerView};
 
@@ -328,8 +331,8 @@ pub struct CallTraceWithSource {
     pub to: String,
     pub contract_name: String,
     pub function_name: String,
-    pub inputs: Vec<String>,
-    pub return_value: Vec<String>,
+    pub inputs: Vec<Value>,
+    pub return_value: Vec<Value>,
     pub type_args: Vec<String>,
     pub calls: Vec<CallTraceWithSource>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -364,8 +367,8 @@ impl CallTraceWithSource {
             contract_name: module_name.unwrap().to_string(),
             to: to_account.unwrap().to_string(),
             function_name: format!("{}::{}", to_module_name.unwrap().to_string(), call_trace.func_name),
-            inputs: call_trace.inputs.clone(),
-            return_value: call_trace.outputs.clone(),
+            inputs: call_trace.inputs.clone().into_iter().map(|i| move_value_to_json(i)).collect::<Vec<Value>>(),
+            return_value: call_trace.outputs.clone().into_iter().map(|i| move_value_to_json(i)).collect::<Vec<Value>>(),
             type_args: call_trace.type_args.clone(),
             calls: call_trace.sub_traces.clone().0.into_iter().map(|sub_trace| {
                 CallTraceWithSource::from(sub_trace, package_registries)
@@ -417,8 +420,8 @@ impl CallTraceWithSource {
             contract_name: module_name.unwrap().to_string(),
             to: to_account.unwrap().to_string(),
             function_name: format!("{}::{}", to_module_name.unwrap().to_string(), call_trace.func_name),
-            inputs: call_trace.inputs.clone(),
-            return_value: call_trace.outputs.clone(),
+            inputs: call_trace.inputs.clone().into_iter().map(|i| move_value_to_json(i)).collect::<Vec<Value>>(),
+            return_value: call_trace.outputs.clone().into_iter().map(|i| move_value_to_json(i)).collect::<Vec<Value>>(),
             type_args: call_trace.type_args.clone(),
             calls: call_trace.sub_traces.clone().0.into_iter().map(|sub_trace| {
                 CallTraceWithSource::from_modules(sub_trace, modules_map)

@@ -38,9 +38,6 @@ use poem_openapi::{
     ApiRequest, OpenApi,
 };
 use std::sync::Arc;
-use aptos_api_types::call_trace::{CallTrace};
-use aptos_types::transaction::Version;
-use move_core_types::call_trace::CallTraces;
 
 generate_success_response!(SubmitTransactionResponse, (202, Accepted));
 

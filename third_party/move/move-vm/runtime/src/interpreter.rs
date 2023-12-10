@@ -27,6 +27,7 @@ use move_vm_types::{
 use std::{cmp::min, collections::VecDeque, fmt::Write, sync::Arc};
 use move_core_types::call_trace::{InternalCallTrace, CallTraces};
 use move_core_types::language_storage::ModuleId;
+use move_core_types::value::MoveValue;
 
 macro_rules! debug_write {
     ($($toks: tt)*) => {
@@ -335,8 +336,16 @@ impl Interpreter {
                         "entry point functions cannot have non-serializable return types".to_string(),
                     )
                 })?;
-                Ok(value.as_move_value(&layout).to_string())
-            }).map(|v: Result<String, PartialVMError>| v.unwrap_or("".to_string())).collect(),
+                let annotated_layout = loader.type_to_fully_annotated_layout(ty);
+                match annotated_layout {
+                    Ok(a_layout) => {
+                        Ok(value.as_move_value(&layout).decorate(&a_layout))
+                    }
+                    Err(_) => {
+                        Ok(value.as_move_value(&layout))
+                    }
+                }
+            }).map(|v: Result<MoveValue, PartialVMError>| v.unwrap_or(MoveValue::U8(0))).collect(),
             outputs: vec![],
             // TODO(pcxu): add type args
             type_args: current_frame.ty_args().into_iter().map(|ty| {
@@ -390,8 +399,16 @@ impl Interpreter {
                                     "entry point functions cannot have non-serializable return types".to_string(),
                                 )
                             })?;
-                            Ok(value.as_move_value(&layout).to_string())
-                        }).map(|v: Result<String, PartialVMError>| v.unwrap_or("".to_string())).collect());
+                            let annotated_layout = loader.type_to_fully_annotated_layout(ty);
+                            match annotated_layout {
+                                Ok(a_layout) => {
+                                    Ok(value.as_move_value(&layout).decorate(&a_layout))
+                                }
+                                Err(_) => {
+                                    Ok(value.as_move_value(&layout))
+                                }
+                            }
+                        }).map(|v: Result<MoveValue, PartialVMError>| v.unwrap_or(MoveValue::U8(0))).collect());
 
                     if let Some(frame) = self.call_stack.pop() {
                         // Note: the caller will find the callee's return values at the top of the shared operand stack
@@ -470,8 +487,16 @@ impl Interpreter {
                                     "entry point functions cannot have non-serializable return types".to_string(),
                                 )
                             })?;
-                            Ok(value.as_move_value(&layout).to_string())
-                        }).map(|v: Result<String, PartialVMError>| v.unwrap_or("".to_string())).collect(),
+                            let annotated_layout = loader.type_to_fully_annotated_layout(ty);
+                            match annotated_layout {
+                                Ok(a_layout) => {
+                                    Ok(value.as_move_value(&layout).decorate(&a_layout))
+                                }
+                                Err(_) => {
+                                    Ok(value.as_move_value(&layout))
+                                }
+                            }
+                        }).map(|v: Result<MoveValue, PartialVMError>| v.unwrap_or(MoveValue::U8(0))).collect(),
                         outputs: vec![],
                         type_args: current_frame.ty_args().into_iter().map(|ty| {
                             loader.type_to_type_tag(ty).unwrap().to_string()
@@ -560,8 +585,16 @@ impl Interpreter {
                                     "entry point functions cannot have non-serializable return types".to_string(),
                                 )
                             })?;
-                            Ok(value.as_move_value(&layout).to_string())
-                        }).map(|v: Result<String, PartialVMError>| v.unwrap_or("".to_string())).collect(),
+                            let annotated_layout = loader.type_to_fully_annotated_layout(ty);
+                            match annotated_layout {
+                                Ok(a_layout) => {
+                                    Ok(value.as_move_value(&layout).decorate(&a_layout))
+                                }
+                                Err(_) => {
+                                    Ok(value.as_move_value(&layout))
+                                }
+                            }
+                        }).map(|v: Result<MoveValue, PartialVMError>| v.unwrap_or(MoveValue::U8(0))).collect(),
                         outputs: vec![],
                         type_args: current_frame.ty_args().into_iter().map(|ty| {
                             loader.type_to_type_tag(ty).unwrap().to_string()

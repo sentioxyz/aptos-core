@@ -1,25 +1,25 @@
 use std::collections::HashSet;
-use serde::{Deserialize, Serialize};
+use crate::value::MoveValue;
 
 const CALL_STACK_SIZE_LIMIT: usize = 1024;
 
 /// A call trace
 ///
 /// This is a representation of the debug call trace
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InternalCallTrace {
     pub pc: u16,
     pub from_module_id: String,
     pub module_id: String,
     pub func_name: String,
-    pub inputs: Vec<String>,
-    pub outputs: Vec<String>,
+    pub inputs: Vec<MoveValue>,
+    pub outputs: Vec<MoveValue>,
     pub type_args: Vec<String>,
     pub sub_traces: CallTraces,
     pub fdef_idx: u16,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CallTraces(pub Vec<InternalCallTrace>, pub HashSet<String>);
 
 impl CallTraces {
@@ -42,7 +42,7 @@ impl CallTraces {
         self.0.pop()
     }
 
-    pub fn set_outputs(&mut self, outputs: Vec<String>) {
+    pub fn set_outputs(&mut self, outputs: Vec<MoveValue>) {
         let length = self.0.len();
         self.0[length - 1].outputs = outputs
     }
