@@ -42,7 +42,7 @@ impl DebuggerServerConfig {
     }
 
     fn default_listen_address() -> String {
-        "127.0.0.1".to_string()
+        "0.0.0.0".to_string()
     }
 
     fn default_listen_port() -> u16 {
