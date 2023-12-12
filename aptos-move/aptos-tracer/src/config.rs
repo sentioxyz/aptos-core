@@ -46,7 +46,7 @@ impl DebuggerServerConfig {
     }
 
     fn default_listen_port() -> u16 {
-        9102
+        9201
     }
 
     fn default_db_path() -> PathBuf {PathBuf::new()}

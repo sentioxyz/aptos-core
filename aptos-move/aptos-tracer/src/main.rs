@@ -13,7 +13,7 @@ pub enum Target {
     /// Use full node's rest api as query endpoint.
     Rest { endpoint: String, txn_hash: String, chain_id: u8 },
     /// Use a local db instance to serve as query endpoint.
-    DB { path: PathBuf },
+    DB { path: PathBuf, listen_address: Option<String>, listen_port: Option<u16> },
 }
 #[derive(Parser)]
 pub struct Argument {
@@ -41,10 +41,16 @@ async fn main() -> Result<()> {
             );
             Ok(())
         },
-        Target::DB { path } => {
+        Target::DB { path,  listen_address, listen_port} => {
             // run as a server if the target is DB
             let mut config = DebuggerServerConfig::default();
             config.set_db_path(path);
+            if let Some(address) = listen_address {
+                config.listen_address = address;
+            }
+            if let Some(port) = listen_port {
+                config.listen_port = port;
+            }
             run_debugger_server(config, args.sentio_endpoint).await
         },
     }
