@@ -127,7 +127,7 @@ impl AptosTracer {
                         Some(package) => {
                             let sentio_client = reqwest::Client::new();
                             let url = format!(
-                                "{}/api/v1/move/fetch_and_compile?account={}&package={}&networkId={}",
+                                "{}/api/v1/move/fetch_and_compile?account={}&package={}&networkId={}&queryBytecode=true&querySource=true&querySourceMap=true",
                                 self.sentio_endpoint,
                                 unwrapped_module_id.clone().address(),
                                 package.name,
@@ -263,7 +263,7 @@ impl SyncAptosTracer {
                         Some(package) => {
                             let sentio_client = reqwest::blocking::Client::new();
                             let url = format!(
-                                "{}/api/v1/move/fetch_and_compile?account={}&package={}&networkId={}",
+                                "{}/api/v1/move/fetch_and_compile?account={}&package={}&networkId={}&queryBytecode=true&querySource=true&querySourceMap=true",
                                 self.sentio_endpoint,
                                 unwrapped_module_id.clone().address(),
                                 package.name,
@@ -446,8 +446,14 @@ impl CallTraceWithSource {
                             CodeOffset::from(call_trace.pc));
                         match loc {
                             Ok(valid_loc) => {
-                                let start_loc = files.location(file_id, valid_loc.start()).unwrap();
-                                let end_loc = files.location(file_id, valid_loc.end()).unwrap();
+                                let start_loc = files.location(file_id, valid_loc.start()).unwrap_or_else(|_| {
+                                    error!("Error getting code location for call trace - {:?} : {:?}", call_trace, "start_loc is None");
+                                    return files.location(file_id, 0).unwrap();
+                                });
+                                let end_loc = files.location(file_id, valid_loc.end()).unwrap_or_else(|_| {
+                                    error!("Error getting code location for call trace - {:?} : {:?}", call_trace, "end_loc is None");
+                                    return files.location(file_id, 0).unwrap();
+                                });
                                 call_trace_with_source.location = Some(Location {
                                     account: account.unwrap().to_string(),
                                     module: module_name.unwrap().to_string(),
