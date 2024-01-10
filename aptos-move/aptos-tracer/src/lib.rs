@@ -145,7 +145,9 @@ impl AptosTracer {
                                         }
                                     });
                                     compile_response.result.modules.into_iter().for_each(|module| {
-                                        modules_map.insert( unwrapped_module_id.clone().to_string(), module);
+                                        modules_map.insert(ModuleId::new(
+                                            unwrapped_module_id.clone().address().clone(),
+                                            Identifier::new(module.name.as_str()).unwrap()).to_string(), module);
                                     });
                                     match compile_response.result.dependencies {
                                         None => {}
@@ -281,7 +283,9 @@ impl SyncAptosTracer {
                                         }
                                     });
                                     compile_response.result.modules.into_iter().for_each(|module| {
-                                        modules_map.insert( unwrapped_module_id.clone().to_string(), module);
+                                        modules_map.insert(ModuleId::new(
+                                            unwrapped_module_id.clone().address().clone(),
+                                            Identifier::new(module.name.as_str()).unwrap()).to_string(), module);
                                     });
                                     match compile_response.result.dependencies {
                                         None => {}
@@ -463,7 +467,11 @@ impl CallTraceWithSource {
                                 }});
                             }
                             Err(err) => {
-                                error!("Error getting code location for call trace - {:?} : {:?}", call_trace, err);
+                                error!("Error getting code location for module - {:?}, function index - {:?}, pc - {:?} : {:?}",
+                                    call_trace.from_module_id,
+                                    call_trace.fdef_idx,
+                                    call_trace.pc,
+                                    err);
                                 return call_trace_with_source;
                             }
                         }
