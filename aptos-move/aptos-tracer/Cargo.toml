@@ -40,6 +40,7 @@ aptos-db = { workspace = true }
 aptos-config = { workspace = true }
 aptos-framework = { workspace = true }
 move-bytecode-source-map = { workspace = true }
-reqwest = { workspace = true }
+reqwest = { workspace = true, features = ["blocking"] }
 hex = { workspace = true }
 aptos-utils = { workspace = true }
+aptos-api-types = { workspace = true }

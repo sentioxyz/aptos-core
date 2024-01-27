@@ -6,6 +6,7 @@ mod server;
 mod sync_tracer_view;
 mod sync_storage_interface;
 mod converter;
+mod sync_rest_interface;
 
 pub use server::run_debugger_server;
 pub use config::DebuggerServerConfig;
@@ -42,6 +43,7 @@ use move_core_types::call_trace::{InternalCallTrace};
 use move_core_types::identifier::Identifier;
 use move_core_types::language_storage::ModuleId;
 use crate::converter::move_value_to_json;
+use crate::sync_rest_interface::RestTracerInterface;
 use crate::sync_storage_interface::DBTracerInterface;
 use crate::sync_tracer_view::{AptosTracerInterface, SyncTracerView};
 
@@ -197,6 +199,10 @@ impl SyncAptosTracer {
         Self { debugger, sentio_endpoint }
     }
 
+    pub fn rest_client(rest_client: Client, sentio_endpoint: String) -> Result<Self> {
+        Ok(Self::new(Arc::new(RestTracerInterface::new(rest_client)), sentio_endpoint))
+    }
+
     pub fn db<P: AsRef<Path> + Clone>(db_root_path: P, sentio_endpoint: String) -> Result<Self> {
         Ok(Self::new(Arc::new(DBTracerInterface::open(
             db_root_path,
@@ -263,7 +269,6 @@ impl SyncAptosTracer {
                     match matched_package {
                         None => {}
                         Some(package) => {
-                            let sentio_client = reqwest::blocking::Client::new();
                             let url = format!(
                                 "{}/api/v1/move/fetch_and_compile?account={}&package={}&networkId={}&queryBytecode=true&querySource=true&querySourceMap=true",
                                 self.sentio_endpoint,
@@ -271,45 +276,56 @@ impl SyncAptosTracer {
                                 package.name,
                                 chain_id);
                             info!("Fetching and compiling modules from {}", url);
-                            let res = sentio_client.get(url).send();
-                            match res {
-                                Ok(resp_succeed) => {
-                                    let compile_response: CompileResponse = resp_succeed.json().unwrap_or(CompileResponse {
-                                        result: PackageCompilation {
-                                            name: "".to_string(),
-                                            moduleWithoutCode: None,
-                                            modules: vec![],
-                                            dependencies: None,
-                                        }
-                                    });
-                                    compile_response.result.modules.into_iter().for_each(|module| {
-                                        modules_map.insert(ModuleId::new(
-                                            unwrapped_module_id.clone().address().clone(),
-                                            Identifier::new(module.name.as_str()).unwrap()).to_string(), module);
-                                    });
-                                    match compile_response.result.dependencies {
-                                        None => {}
-                                        Some(dependencies) => {
-                                            dependencies.into_iter().for_each(|dependency| {
-                                                dependency.modules.into_iter().for_each(|module| {
-                                                    let account_address = package_names.get(dependency.name.as_str());
-                                                    match account_address {
-                                                        None => {}
-                                                        Some(account) => {
-                                                            modules_map.insert(
-                                                                ModuleId::new(
-                                                                    AccountAddress::from_str(account.as_str()).unwrap(),
-                                                                    Identifier::new(module.name.as_str()).unwrap()).to_string(),
-                                                                module);
-                                                        }
-                                                    }
-                                                });
-                                            });
+                            let compile_response = std::thread::spawn(move || {
+                                match reqwest::blocking::get(url) {
+                                    Ok(resp_succeed) => {
+                                        let compile_response: CompileResponse = resp_succeed.json().unwrap_or(CompileResponse {
+                                            result: PackageCompilation {
+                                                name: "".to_string(),
+                                                moduleWithoutCode: None,
+                                                modules: vec![],
+                                                dependencies: None,
+                                            }
+                                        });
+                                        compile_response
+                                    }
+                                    Err(error) => {
+                                        error!("Error fetching and compiling modules: {:?}", error);
+                                        CompileResponse {
+                                            result: PackageCompilation {
+                                                name: "".to_string(),
+                                                moduleWithoutCode: None,
+                                                modules: vec![],
+                                                dependencies: None,
+                                            }
                                         }
                                     }
                                 }
-                                Err(error) => {
-                                    error!("Error fetching and compiling modules: {:?}", error);
+                            }).join().unwrap();
+
+                            compile_response.result.modules.into_iter().for_each(|module| {
+                                modules_map.insert(ModuleId::new(
+                                    unwrapped_module_id.clone().address().clone(),
+                                    Identifier::new(module.name.as_str()).unwrap()).to_string(), module);
+                            });
+                            match compile_response.result.dependencies {
+                                None => {}
+                                Some(dependencies) => {
+                                    dependencies.into_iter().for_each(|dependency| {
+                                        dependency.modules.into_iter().for_each(|module| {
+                                            let account_address = package_names.get(dependency.name.as_str());
+                                            match account_address {
+                                                None => {}
+                                                Some(account) => {
+                                                    modules_map.insert(
+                                                        ModuleId::new(
+                                                            AccountAddress::from_str(account.as_str()).unwrap(),
+                                                            Identifier::new(module.name.as_str()).unwrap()).to_string(),
+                                                        module);
+                                                }
+                                            }
+                                        });
+                                    });
                                 }
                             }
                         }

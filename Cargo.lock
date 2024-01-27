@@ -3585,6 +3585,7 @@ name = "aptos-tracer"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "aptos-api-types",
  "aptos-config",
  "aptos-crypto",
  "aptos-db",

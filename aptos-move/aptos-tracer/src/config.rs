@@ -21,6 +21,10 @@ pub struct DebuggerServerConfig {
     /// DB path
     #[serde(default = "DebuggerServerConfig::default_db_path")]
     pub db_path: PathBuf,
+
+    /// Rest endpoint
+    #[serde(default = "DebuggerServerConfig::default_rest_endpoint")]
+    pub rest_endpoint: String,
 }
 
 impl DebuggerServerConfig {
@@ -29,12 +33,17 @@ impl DebuggerServerConfig {
             disable: DebuggerServerConfig::default_disable(),
             listen_address: DebuggerServerConfig::default_listen_address(),
             listen_port: DebuggerServerConfig::default_listen_port(),
-            db_path: DebuggerServerConfig::default_db_path()
+            db_path: DebuggerServerConfig::default_db_path(),
+            rest_endpoint: DebuggerServerConfig::default_rest_endpoint(),
         }
     }
 
     pub fn set_db_path(&mut self, db_path: PathBuf) {
         self.db_path = db_path
+    }
+
+    pub fn set_rest_endpoint(&mut self, rest_endpoint: String) {
+        self.rest_endpoint = rest_endpoint
     }
 
     fn default_disable() -> bool {
@@ -50,4 +59,8 @@ impl DebuggerServerConfig {
     }
 
     fn default_db_path() -> PathBuf {PathBuf::new()}
+
+    fn default_rest_endpoint() -> String {
+        "https://fullnode.mainnet.aptoslabs.com/v1".to_string()
+    }
 }
