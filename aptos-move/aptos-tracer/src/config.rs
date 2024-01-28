@@ -25,6 +25,14 @@ pub struct DebuggerServerConfig {
     /// Rest endpoint
     #[serde(default = "DebuggerServerConfig::default_rest_endpoint")]
     pub rest_endpoint: String,
+
+    /// use db or not
+    #[serde(default = "DebuggerServerConfig::default_use_db")]
+    pub use_db: bool,
+
+    /// sentio endpoint
+    #[serde(default = "DebuggerServerConfig::default_sentio_endpoint")]
+    pub sentio_endpoint: String,
 }
 
 impl DebuggerServerConfig {
@@ -35,6 +43,8 @@ impl DebuggerServerConfig {
             listen_port: DebuggerServerConfig::default_listen_port(),
             db_path: DebuggerServerConfig::default_db_path(),
             rest_endpoint: DebuggerServerConfig::default_rest_endpoint(),
+            use_db: DebuggerServerConfig::default_use_db(),
+            sentio_endpoint: DebuggerServerConfig::default_sentio_endpoint(),
         }
     }
 
@@ -44,6 +54,14 @@ impl DebuggerServerConfig {
 
     pub fn set_rest_endpoint(&mut self, rest_endpoint: String) {
         self.rest_endpoint = rest_endpoint
+    }
+
+    pub fn set_use_db(&mut self, use_db: bool) {
+        self.use_db = use_db
+    }
+
+    pub fn set_sentio_endpoint(&mut self, sentio_endpoint: String) {
+        self.sentio_endpoint = sentio_endpoint
     }
 
     fn default_disable() -> bool {
@@ -62,5 +80,13 @@ impl DebuggerServerConfig {
 
     fn default_rest_endpoint() -> String {
         "https://fullnode.mainnet.aptoslabs.com/v1".to_string()
+    }
+
+    fn default_use_db() -> bool {
+        false
+    }
+
+    fn default_sentio_endpoint() -> String {
+        "https://test.sentio.xyz".to_string()
     }
 }
