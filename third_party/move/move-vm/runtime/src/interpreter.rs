@@ -314,7 +314,7 @@ impl Interpreter {
             .map_err(|err| self.set_location(err))?;
         call_traces.push(InternalCallTrace {
             from_module_id: current_frame.function.module_id().unwrap().to_string(),
-            pc: current_frame.pc,
+            pc: 0,
             fdef_idx: current_frame.function.index().0 as u16,
             module_id: current_frame.function.module_id().unwrap().to_string(),
             func_name: current_frame.function.name().to_string(),

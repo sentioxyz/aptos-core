@@ -12,6 +12,7 @@ use reqwest::{
 };
 use std::{str::FromStr, time::Duration};
 use url::Url;
+use reqwest::blocking::ClientBuilder as BlockingClientBuilder;
 
 pub enum AptosBaseUrl {
     Mainnet,
@@ -41,6 +42,7 @@ pub struct ClientBuilder {
     base_url: Url,
     timeout: Duration,
     headers: HeaderMap,
+    blocking_builder: BlockingClientBuilder,
 }
 
 impl ClientBuilder {
@@ -57,6 +59,7 @@ impl ClientBuilder {
             version_path_base: DEFAULT_VERSION_PATH_BASE.to_string(),
             timeout: Duration::from_secs(10), // Default to 10 seconds
             headers,
+            blocking_builder: BlockingClientBuilder::new(),
         }
     }
 
@@ -89,13 +92,22 @@ impl ClientBuilder {
         Client {
             inner: self
                 .reqwest_builder
-                .default_headers(self.headers)
+                .default_headers(self.headers.clone())
                 .timeout(self.timeout)
                 .cookie_store(true)
                 .build()
                 .unwrap(),
             base_url: self.base_url,
             version_path_base,
+            blocking_client: std::thread::spawn(move || {
+                self
+                    .blocking_builder
+                    .default_headers(self.headers)
+                    .timeout(self.timeout)
+                    .cookie_store(true)
+                    .build()
+                    .unwrap()
+                }).join().unwrap(),
         }
     }
 }

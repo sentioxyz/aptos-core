@@ -14,6 +14,8 @@ pub enum Target {
     Rest { endpoint: String, txn_hash: String, chain_id: u8 },
     /// Use a local db instance to serve as query endpoint.
     DB { path: PathBuf, listen_address: Option<String>, listen_port: Option<u16> },
+    /// Use a full node's rest api as query endpoint and run as a server.
+    ServerBasedOnRest { endpoint: String, listen_address: Option<String>, listen_port: Option<u16> },
 }
 #[derive(Parser)]
 pub struct Argument {
@@ -28,7 +30,6 @@ pub struct Argument {
 async fn main() -> Result<()> {
     aptos_logger::Logger::new().init();
     let args = Argument::parse();
-
     match args.target {
         Target::Rest { endpoint, txn_hash, chain_id } => {
             let tracer = AptosTracer::rest_client(Client::new(Url::parse(&endpoint)?), args.sentio_endpoint)?;
@@ -45,13 +46,29 @@ async fn main() -> Result<()> {
             // run as a server if the target is DB
             let mut config = DebuggerServerConfig::default();
             config.set_db_path(path);
+            config.set_use_db(true);
+            config.set_sentio_endpoint(args.sentio_endpoint);
             if let Some(address) = listen_address {
                 config.listen_address = address;
             }
             if let Some(port) = listen_port {
                 config.listen_port = port;
             }
-            run_debugger_server(config, args.sentio_endpoint).await
+            run_debugger_server(config).await
+        },
+        Target::ServerBasedOnRest { endpoint, listen_address, listen_port } => {
+            // run as a server if the target is DB
+            let mut config = DebuggerServerConfig::default();
+            config.set_rest_endpoint(endpoint);
+            config.set_use_db(false);
+            config.set_sentio_endpoint(args.sentio_endpoint);
+            if let Some(address) = listen_address {
+                config.listen_address = address;
+            }
+            if let Some(port) = listen_port {
+                config.listen_port = port;
+            }
+            run_debugger_server(config).await
         },
     }
 }
