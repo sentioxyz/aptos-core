@@ -2,27 +2,32 @@
 // Parts of the project are originally copyright © Meta Platforms, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::{AptosValidatorInterface, FilterCondition};
-use anyhow::{ensure, Result};
-use aptos_config::config::{
-    RocksdbConfigs, StorageDirPaths, BUFFERED_STATE_TARGET_ITEMS,
-    DEFAULT_MAX_NUM_NODES_PER_LRU_CACHE_SHARD, NO_OP_STORAGE_PRUNER_CONFIG,
-};
+use anyhow::{bail, ensure, format_err, Result};
+use aptos_config::config::{RocksdbConfigs, BUFFERED_STATE_TARGET_ITEMS, DEFAULT_MAX_NUM_NODES_PER_LRU_CACHE_SHARD, NO_OP_STORAGE_PRUNER_CONFIG, StorageDirPaths};
 use aptos_db::AptosDB;
-use aptos_framework::natives::code::{PackageMetadata, PackageRegistry};
 use aptos_storage_interface::{AptosDbError, DbReader, MAX_REQUEST_LIMIT};
+use aptos_storage_interface::state_store::state_view::db_state_view::DbStateViewAtVersion;
 use aptos_types::{
     account_address::AccountAddress,
     state_store::{state_key::StateKey, state_value::StateValue},
-    transaction::{PersistedAuxiliaryInfo, Transaction, TransactionInfo, Version},
+    transaction::{Transaction, TransactionInfo, Version},
 };
-use move_core_types::language_storage::ModuleId;
 use std::{collections::HashMap, path::Path, sync::Arc};
-use aptos_api_types::TransactionOnChainData;
+use std::collections::BTreeMap;
+use aptos_framework::natives::code::{PackageMetadata, PackageRegistry};
+use aptos_logger::error;
+use aptos_rest_client::aptos_api_types::{ResourceGroup, TransactionOnChainData};
+use aptos_types::access_path::AccessPath;
+use aptos_vm::move_vm_ext::AptosMoveResolver;
+use aptos_utils::aptos_try;
+use aptos_vm::data_cache::AsMoveResolver;
 
-pub struct DBDebuggerInterface(Arc<dyn DbReader>);
+use move_core_types::language_storage::{ModuleId, StructTag};
+use crate::sync_tracer_view::{AptosTracerInterface, FilterCondition};
 
-impl DBDebuggerInterface {
+pub struct DBTracerInterface(Arc<dyn DbReader>);
+
+impl DBTracerInterface {
     pub fn open<P: AsRef<Path> + Clone>(db_root_path: P) -> Result<Self> {
         Ok(Self(Arc::new(
             AptosDB::open(
@@ -35,14 +40,13 @@ impl DBDebuggerInterface {
                 DEFAULT_MAX_NUM_NODES_PER_LRU_CACHE_SHARD,
                 None,
             )
-            .map_err(anyhow::Error::from)?,
+                .map_err(anyhow::Error::from)?,
         )))
     }
 }
 
-#[async_trait::async_trait]
-impl AptosValidatorInterface for DBDebuggerInterface {
-    async fn get_state_value_by_version(
+impl AptosTracerInterface for DBTracerInterface {
+    fn get_state_value_by_version(
         &self,
         state_key: &StateKey,
         version: Version,
@@ -52,15 +56,11 @@ impl AptosValidatorInterface for DBDebuggerInterface {
             .map_err(Into::into)
     }
 
-    async fn get_committed_transactions(
+    fn get_committed_transactions(
         &self,
         start: Version,
         limit: u64,
-    ) -> Result<(
-        Vec<Transaction>,
-        Vec<TransactionInfo>,
-        Vec<PersistedAuxiliaryInfo>,
-    )> {
+    ) -> Result<(Vec<Transaction>, Vec<TransactionInfo>)> {
         let txn_iter = self.0.get_transaction_iterator(start, limit)?;
         let txn_info_iter = self.0.get_transaction_info_iterator(start, limit)?;
         let txns = txn_iter
@@ -69,21 +69,11 @@ impl AptosValidatorInterface for DBDebuggerInterface {
         let txn_infos = txn_info_iter
             .map(|res| res.map_err(Into::into))
             .collect::<Result<Vec<_>>>()?;
-
-        // Get auxiliary infos using iterator for better performance
-        let aux_info_iter = self
-            .0
-            .get_persisted_auxiliary_info_iterator(start, limit as usize)?;
-        let auxiliary_infos = aux_info_iter
-            .map(|res| res.map_err(Into::into))
-            .collect::<Result<Vec<_>>>()?;
-
         ensure!(txns.len() == txn_infos.len());
-        ensure!(txns.len() == auxiliary_infos.len());
-        Ok((txns, txn_infos, auxiliary_infos))
+        Ok((txns, txn_infos))
     }
 
-    async fn get_and_filter_committed_transactions(
+    fn get_and_filter_committed_transactions(
         &self,
         _start: Version,
         _limit: u64,
@@ -110,36 +100,33 @@ impl AptosValidatorInterface for DBDebuggerInterface {
         unimplemented!();
     }
 
-    async fn get_latest_ledger_info_version(&self) -> Result<Version> {
+    fn get_transaction_by_hash(&self, _hash: String) -> Result<TransactionOnChainData> {
+        todo!()
+    }
+
+    fn get_latest_ledger_info_version(&self) -> Result<Version> {
         self.0.get_latest_ledger_info_version().map_err(Into::into)
     }
 
-    async fn get_version_by_account_sequence(
+    fn get_version_by_account_sequence(
         &self,
         account: AccountAddress,
         seq: u64,
     ) -> Result<Option<Version>> {
-        let ledger_version = self.get_latest_ledger_info_version().await?;
+        let ledger_version = self.get_latest_ledger_info_version()?;
         self.0
-            .get_account_ordered_transaction(account, seq, false, ledger_version)
+            .get_account_transaction(account, seq, false, ledger_version)
             .map_or_else(
                 |e| Err(anyhow::Error::from(e)),
                 |tp| Ok(tp.map(|e| e.version)),
             )
     }
 
-    async fn get_persisted_auxiliary_infos(
+    fn get_package_registry(
         &self,
-        start: Version,
-        limit: u64,
-    ) -> Result<Vec<PersistedAuxiliaryInfo>> {
-        // Use iterator for more efficient batch retrieval
-        let aux_info_iter = self
-            .0
-            .get_persisted_auxiliary_info_iterator(start, limit as usize)?;
-        let result = aux_info_iter
-            .map(|res| res.map_err(Into::into))
-            .collect::<Result<Vec<_>>>()?;
-        Ok(result)
+        account: AccountAddress,
+        version: Version,
+    ) -> Result<Option<PackageRegistry>> {
+        todo!()
     }
 }
