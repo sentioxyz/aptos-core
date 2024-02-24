@@ -45,6 +45,8 @@ use std::{
     fmt::Write,
     sync::Arc,
 };
+use move_core_types::call_trace::{InternalCallTrace, CallTraces};
+use move_core_types::value::MoveValue;
 
 macro_rules! set_err_info {
     ($frame:ident, $e:expr) => {{
@@ -111,6 +113,37 @@ impl Interpreter {
             extensions,
             function,
             ty_args,
+            args,
+        )
+    }
+
+    pub(crate) fn call_trace(
+        function: Arc<Function>,
+        ty_args: Vec<Type>,
+        args: Vec<Value>,
+        data_store: &mut TransactionDataCache,
+        module_store: &ModuleStorageAdapter,
+        gas_meter: &mut impl GasMeter,
+        traversal_context: &mut TraversalContext,
+        extensions: &mut NativeContextExtensions,
+        loader: &Loader,
+    ) -> VMResult<CallTraces> {
+        let interpreter = Interpreter {
+            operand_stack: Stack::new(),
+            call_stack: CallStack::new(),
+            paranoid_type_checks: loader.vm_config().paranoid_type_checks,
+            access_control: AccessControlState::default(),
+            active_modules: HashSet::new(),
+        };
+        interpreter.call_trace_internal(
+            loader, 
+            data_store, 
+            module_store, 
+            gas_meter, 
+            traversal_context, 
+            extensions, 
+            function, 
+            ty_args, 
             args,
         )
     }
@@ -335,6 +368,361 @@ impl Interpreter {
             self.attach_state_if_invariant_violation(err, &frame)
         })?;
         Ok(())
+    }
+
+    fn call_trace_internal(
+        mut self,
+        loader: &Loader,
+        data_store: &mut TransactionDataCache,
+        module_store: &ModuleStorageAdapter,
+        gas_meter: &mut impl GasMeter,
+        traversal_context: &mut TraversalContext,
+        extensions: &mut NativeContextExtensions,
+        function: Arc<Function>,
+        ty_args: Vec<Type>,
+        args: Vec<Value>,
+    ) -> VMResult<CallTraces> {
+        let mut locals = Locals::new(function.local_count());
+        let mut args_1 = vec![];
+        let mut call_traces = CallTraces::new();
+        for (i, value) in args.into_iter().enumerate() {
+            locals
+                .store_loc(
+                    i,
+                    value.copy_value(),
+                    loader
+                        .vm_config()
+                        .check_invariant_in_swap_loc,
+                )
+                .map_err(|e| self.set_location(e))?;
+            args_1.push(value);
+        }
+
+        if let Some(module_id) = function.module_id() {
+            self.active_modules.insert(module_id.clone());
+        }
+
+        let mut current_frame = self
+            .make_new_frame(gas_meter, loader, function, ty_args, locals)
+            .map_err(|err| self.set_location(err))?;
+
+        // Access control for the new frame.
+        self.access_control
+            .enter_function(&current_frame, current_frame.function.as_ref())
+            .map_err(|e| self.set_location(e))?;
+
+        call_traces.push(InternalCallTrace {
+            from_module_id: current_frame.function.module_id().unwrap().to_string(),
+            pc: 0,
+            fdef_idx: current_frame.function.index().0 as u16,
+            module_id: current_frame.function.module_id().unwrap().to_string(),
+            func_name: current_frame.function.name().to_string(),
+            inputs: args_1.into_iter().zip(current_frame.function.param_tys()).map(|(value, ty)| {
+                let (ty, value) = match ty {
+                    Type::Reference(inner) | Type::MutableReference(inner) => {
+                        let ref_value: Reference = value.cast().map_err(|_err| {
+                            PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR).with_message(
+                                "non reference value given for a reference typed return value".to_string(),
+                            )
+                        })?;
+                        let inner_value = ref_value.read_ref()?;
+                        (&**inner, inner_value)
+                    },
+                    _ => (ty, value),
+                };
+                let layout = loader.type_to_type_layout(ty, module_store).map_err(|_err| {
+                    PartialVMError::new(StatusCode::VERIFICATION_ERROR).with_message(
+                        "entry point functions cannot have non-serializable return types".to_string(),
+                    )
+                })?;
+                let annotated_layout = loader.type_to_fully_annotated_layout(ty, module_store);
+                match annotated_layout {
+                    Ok(a_layout) => {
+                        Ok(value.as_move_value(&layout).decorate(&a_layout))
+                    }
+                    Err(_) => {
+                        Ok(value.as_move_value(&layout))
+                    }
+                }
+            }).map(|v: Result<MoveValue, PartialVMError>| v.unwrap_or(MoveValue::U8(0))).collect(),
+            outputs: vec![],
+            type_args: current_frame.ty_args().into_iter().map(|ty| {
+                loader.type_to_type_tag(ty).unwrap().to_string()
+            }).collect(),
+            sub_traces: CallTraces::new(),
+        }).map_err(|_e| {
+            let err = PartialVMError::new(StatusCode::ABORTED);
+            let err = set_err_info!(current_frame, err);
+            self.attach_state_if_invariant_violation(err, &current_frame)
+        })?;
+
+        loop {
+            let resolver = current_frame.resolver(loader, module_store);
+            let exit_code =
+                current_frame //self
+                    .execute_code(&resolver, &mut self, data_store, module_store, gas_meter)
+                    .map_err(|err| self.attach_state_if_invariant_violation(err, &current_frame))?;
+            match exit_code {
+                ExitCode::Return => {
+                    let non_ref_vals = current_frame
+                        .locals
+                        .drop_all_values()
+                        .map(|(_idx, val)| val)
+                        .collect::<Vec<_>>();
+
+                    // TODO: Check if the error location is set correctly.
+                    gas_meter
+                        .charge_drop_frame(non_ref_vals.iter())
+                        .map_err(|e| self.set_location(e))?;
+
+                    self.access_control
+                        .exit_function(current_frame.function.as_ref())
+                        .map_err(|e| self.set_location(e))?;
+
+                    let mut outputs = vec![];
+                    for val in self.operand_stack.last_n(current_frame.function.return_tys().len()).unwrap() {
+                        outputs.push(val.copy_value());
+                    }
+                    call_traces.set_outputs(
+                        outputs.into_iter().zip(current_frame.function.return_tys()).map(|(value, ty)| {
+                            let (ty, value) = match ty {
+                                Type::Reference(inner) | Type::MutableReference(inner) => {
+                                    let ref_value: Reference = value.cast().map_err(|_err| {
+                                        PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR).with_message(
+                                            "non reference value given for a reference typed return value".to_string(),
+                                        )
+                                    })?;
+                                    let inner_value = ref_value.read_ref()?;
+                                    (&**inner, inner_value)
+                                },
+                                _ => (ty, value),
+                            };
+                            let layout = loader.type_to_type_layout(ty, module_store).map_err(|_err| {
+                                PartialVMError::new(StatusCode::VERIFICATION_ERROR).with_message(
+                                    "entry point functions cannot have non-serializable return types".to_string(),
+                                )
+                            })?;
+                            let annotated_layout = loader.type_to_fully_annotated_layout(ty, module_store);
+                            match annotated_layout {
+                                Ok(a_layout) => {
+                                    Ok(value.as_move_value(&layout).decorate(&a_layout))
+                                }
+                                Err(_) => {
+                                    Ok(value.as_move_value(&layout))
+                                }
+                            }
+                        }).map(|v: Result<MoveValue, PartialVMError>| v.unwrap_or(MoveValue::U8(0))).collect());
+
+                    if let Some(frame) = self.call_stack.pop() {
+                        if frame.function.module_id() != current_frame.function.module_id() {
+                            if let Some(module_id) = current_frame.function.module_id() {
+                                self.active_modules.remove(module_id);
+                            }
+                        }
+                        // Note: the caller will find the callee's return values at the top of the shared operand stack
+                        current_frame = frame;
+                        current_frame.pc += 1; // advance past the Call instruction in the caller
+                        let top_call = call_traces.pop().unwrap();
+                        call_traces.push_call_trace(top_call);
+                    } else {
+                        // end of execution. `self` should no longer be used afterward
+                        // Clean up access control
+                        self.access_control
+                            .exit_function(current_frame.function.as_ref())
+                            .map_err(|e| self.set_location(e))?;
+                        return Ok(call_traces);
+                    }
+                },
+                ExitCode::Call(fh_idx) => {
+                    let func = resolver
+                        .function_from_handle(fh_idx)
+                        .map_err(|e| self.set_location(e))?;
+
+                    if self.paranoid_type_checks {
+                        self.check_friend_or_private_call(&current_frame.function, &func)?;
+                    }
+
+                    // Charge gas
+                    let module_id = func
+                        .module_id()
+                        .ok_or_else(|| {
+                            PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR)
+                                .with_message("Failed to get native function module id".to_string())
+                        })
+                        .map_err(|e| set_err_info!(current_frame, e))?;
+                    gas_meter
+                        .charge_call(
+                            module_id,
+                            func.name(),
+                            self.operand_stack
+                                .last_n(func.param_count())
+                                .map_err(|e| set_err_info!(current_frame, e))?,
+                            (func.local_count() as u64).into(),
+                        )
+                        .map_err(|e| set_err_info!(current_frame, e))?;
+
+                    if func.is_native() {
+                        self.call_native(
+                            &mut current_frame,
+                            &resolver,
+                            data_store,
+                            module_store,
+                            gas_meter,
+                            traversal_context,
+                            extensions,
+                            func,
+                            vec![],
+                        )?;
+                        continue;
+                    }
+                    let mut inputs = vec![];
+                    for val in self.operand_stack.last_n(func.param_count()).unwrap() {
+                        inputs.push(val.copy_value());
+                    }
+                    call_traces.push(InternalCallTrace {
+                        from_module_id: current_frame.function.module_id().unwrap().to_string(),
+                        pc: current_frame.pc,
+                        fdef_idx: current_frame.function.index().0 as u16,
+                        module_id: module_id.to_string(),
+                        func_name: func.name().to_string(),
+                        inputs: inputs.into_iter().zip(func.param_tys()).map(|(value, ty)| {
+                            let (ty, value) = match ty {
+                                Type::Reference(inner) | Type::MutableReference(inner) => {
+                                    let ref_value: Reference = value.cast().map_err(|_err| {
+                                        PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR).with_message(
+                                            "non reference value given for a reference typed return value".to_string(),
+                                        )
+                                    })?;
+                                    let inner_value = ref_value.read_ref()?;
+                                    (&**inner, inner_value)
+                                },
+                                _ => (ty, value),
+                            };
+                            let layout = loader.type_to_type_layout(ty, module_store).map_err(|_err| {
+                                PartialVMError::new(StatusCode::VERIFICATION_ERROR).with_message(
+                                    "entry point functions cannot have non-serializable return types".to_string(),
+                                )
+                            })?;
+                            let annotated_layout = loader.type_to_fully_annotated_layout(ty, module_store);
+                            match annotated_layout {
+                                Ok(a_layout) => {
+                                    Ok(value.as_move_value(&layout).decorate(&a_layout))
+                                }
+                                Err(_) => {
+                                    Ok(value.as_move_value(&layout))
+                                }
+                            }
+                        }).map(|v: Result<MoveValue, PartialVMError>| v.unwrap_or(MoveValue::U8(0))).collect(),
+                        outputs: vec![],
+                        type_args: current_frame.ty_args().into_iter().map(|ty| {
+                            loader.type_to_type_tag(ty).unwrap().to_string()
+                        }).collect(),
+                        sub_traces: CallTraces::new(),
+                    }).map_err(|_e| {
+                        let err = PartialVMError::new(StatusCode::ABORTED);
+                        let err = set_err_info!(current_frame, err);
+                        self.attach_state_if_invariant_violation(err, &current_frame)
+                    })?;
+                    self.set_new_call_frame(&mut current_frame, gas_meter, loader, func, vec![])?;
+                },
+                ExitCode::CallGeneric(idx) => {
+                    let ty_args = resolver
+                        .instantiate_generic_function(Some(gas_meter), idx, current_frame.ty_args())
+                        .map_err(|e| set_err_info!(current_frame, e))?;
+                    let func = resolver
+                        .function_from_instantiation(idx)
+                        .map_err(|e| self.set_location(e))?;
+
+                    if self.paranoid_type_checks {
+                        self.check_friend_or_private_call(&current_frame.function, &func)?;
+                    }
+
+                    // Charge gas
+                    let module_id = func
+                        .module_id()
+                        .ok_or_else(|| {
+                            PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR)
+                                .with_message("Failed to get native function module id".to_string())
+                        })
+                        .map_err(|e| set_err_info!(current_frame, e))?;
+                    gas_meter
+                        .charge_call_generic(
+                            module_id,
+                            func.name(),
+                            ty_args.iter().map(|ty| TypeWithLoader { ty, loader }),
+                            self.operand_stack
+                                .last_n(func.param_count())
+                                .map_err(|e| set_err_info!(current_frame, e))?,
+                            (func.local_count() as u64).into(),
+                        )
+                        .map_err(|e| set_err_info!(current_frame, e))?;
+
+                    if func.is_native() {
+                        self.call_native(
+                            &mut current_frame,
+                            &resolver,
+                            data_store,
+                            module_store,
+                            gas_meter,
+                            traversal_context,
+                            extensions,
+                            func,
+                            ty_args,
+                        )?;
+                        continue;
+                    }
+                    let mut inputs = vec![];
+                    for val in self.operand_stack.last_n(func.param_count()).unwrap() {
+                        inputs.push(val.copy_value());
+                    }
+                    call_traces.push(InternalCallTrace {
+                        from_module_id: current_frame.function.module_id().unwrap().to_string(),
+                        pc: current_frame.pc,
+                        fdef_idx: current_frame.function.index().0 as u16,
+                        module_id: module_id.to_string(),
+                        func_name: func.name().to_string(),
+                        inputs: inputs.into_iter().zip(func.param_tys()).map(|(value, ty)| {
+                            let (ty, value) = match ty {
+                                Type::Reference(inner) | Type::MutableReference(inner) => {
+                                    let ref_value: Reference = value.cast().map_err(|_err| {
+                                        PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR).with_message(
+                                            "non reference value given for a reference typed return value".to_string(),
+                                        )
+                                    })?;
+                                    let inner_value = ref_value.read_ref()?;
+                                    (&**inner, inner_value)
+                                },
+                                _ => (ty, value),
+                            };
+                            let layout = loader.type_to_type_layout(ty, module_store).map_err(|_err| {
+                                PartialVMError::new(StatusCode::VERIFICATION_ERROR).with_message(
+                                    "entry point functions cannot have non-serializable return types".to_string(),
+                                )
+                            })?;
+                            let annotated_layout = loader.type_to_fully_annotated_layout(ty, module_store);
+                            match annotated_layout {
+                                Ok(a_layout) => {
+                                    Ok(value.as_move_value(&layout).decorate(&a_layout))
+                                }
+                                Err(_) => {
+                                    Ok(value.as_move_value(&layout))
+                                }
+                            }
+                        }).map(|v: Result<MoveValue, PartialVMError>| v.unwrap_or(MoveValue::U8(0))).collect(),
+                        outputs: vec![],
+                        type_args: current_frame.ty_args().into_iter().map(|ty| {
+                            loader.type_to_type_tag(ty).unwrap().to_string()
+                        }).collect(),
+                        sub_traces: CallTraces::new(),
+                    }).map_err(|_e| {
+                        let err = PartialVMError::new(StatusCode::ABORTED);
+                        let err = set_err_info!(current_frame, err);
+                        self.attach_state_if_invariant_violation(err, &current_frame)
+                    })?;
+                    self.set_new_call_frame(&mut current_frame, gas_meter, loader, func, ty_args)?;
+                },
+            }
+        }
     }
 
     /// Returns a `Frame` if the call is to a Move function. Calls to native functions are

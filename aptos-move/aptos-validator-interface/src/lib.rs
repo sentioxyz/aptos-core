@@ -6,8 +6,8 @@ mod rest_interface;
 mod storage_interface;
 
 pub use crate::{rest_interface::RestDebuggerInterface, storage_interface::DBDebuggerInterface};
-use anyhow::Result;
-use aptos_framework::natives::code::PackageMetadata;
+use anyhow::{anyhow, Result};
+use aptos_framework::natives::code::{PackageMetadata, PackageRegistry};
 use aptos_types::{
     account_address::AccountAddress,
     state_store::{
@@ -23,6 +23,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
+use aptos_api_types::TransactionOnChainData;
 
 #[derive(Clone, Copy)]
 pub struct FilterCondition {
