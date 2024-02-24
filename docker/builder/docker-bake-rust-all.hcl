@@ -181,6 +181,14 @@ target "tools" {
   target     = "tools"
   tags       = generate_tags("tools")
 }
+
+target "aptos-tracer" {
+  inherits   = ["_common"]
+  dockerfile = "docker/builder/aptos-tracer.Dockerfile"
+  target     = "aptos-tracer"
+  tags       = generate_tags("aptos-tracer")
+}
+
 target "faucet" {
   inherits   = ["_common"]
   dockerfile = "docker/builder/faucet.Dockerfile"

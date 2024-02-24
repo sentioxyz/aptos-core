@@ -3,7 +3,7 @@
 
 use crate::{AptosValidatorInterface, FilterCondition};
 use anyhow::{anyhow, Result};
-use aptos_api_types::{AptosError, AptosErrorCode};
+use aptos_api_types::{AptosError, AptosErrorCode, HashValue, TransactionData, TransactionOnChainData};
 use aptos_framework::{
     natives::code::{PackageMetadata, PackageRegistry},
     APTOS_PACKAGES,
@@ -22,7 +22,8 @@ use aptos_types::{
 };
 use async_recursion::async_recursion;
 use move_core_types::language_storage::ModuleId;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
+use std::str::FromStr;
 
 pub struct RestDebuggerInterface(Client);
 
