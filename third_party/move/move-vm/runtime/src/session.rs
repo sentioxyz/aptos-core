@@ -29,6 +29,7 @@ use move_vm_types::{
     values::{GlobalValue, Value},
 };
 use std::{borrow::Borrow, collections::BTreeSet};
+use move_binary_format::call_trace::CallTraces;
 
 pub struct Session<'r, 'l> {
     pub(crate) move_vm: &'l MoveVM,
@@ -589,5 +590,58 @@ impl<'r, 'l> Session<'r, 'l> {
                 script.borrow(),
                 code_storage,
             )
+    }
+
+    pub fn call_trace_from_script(
+        &mut self,
+        script: impl Borrow<[u8]>,
+        ty_args: Vec<TypeTag>,
+        args: Vec<impl Borrow<[u8]>>,
+        gas_meter: &mut impl GasMeter,
+        traversal_context: &mut TraversalContext,
+        code_storage: &impl CodeStorage,
+    ) -> VMResult<CallTraces> {
+        self.move_vm.runtime.call_trace_from_script(
+            script,
+            ty_args,
+            args,
+            &mut self.data_cache,
+            &self.module_store,
+            gas_meter,
+            traversal_context,
+            &mut self.native_extensions,
+            code_storage,
+        )
+    }
+
+    pub fn call_trace(
+        &mut self,
+        module_id: &ModuleId,
+        function_name: &IdentStr,
+        ty_args: Vec<TypeTag>,
+        args: Vec<impl Borrow<[u8]>>,
+        gas_meter: &mut impl GasMeter,
+        traversal_context: &mut TraversalContext,
+        module_storage: &impl ModuleStorage,
+    ) -> VMResult<CallTraces> {
+        let func = self.move_vm.runtime.loader().load_function(
+            module_id,
+            function_name,
+            &ty_args,
+            &mut self.data_cache,
+            &self.module_store,
+            module_storage,
+        )?;
+
+        self.move_vm.runtime.call_trace(
+            func,
+            args,
+            &mut self.data_cache,
+            &self.module_store,
+            gas_meter,
+            traversal_context,
+            &mut self.native_extensions,
+            module_storage,
+        )
     }
 }

@@ -25,8 +25,8 @@ use move_binary_format::{
     normalized, CompiledModule, IndexKind,
 };
 use move_core_types::{
-    account_address::AccountAddress, language_storage::TypeTag, value::MoveTypeLayout,
-    vm_status::StatusCode,
+    account_address::AccountAddress, language_storage::TypeTag,
+    value::MoveTypeLayout, vm_status::StatusCode,
 };
 use move_vm_metrics::{Timer, VM_TIMER};
 use move_vm_types::{
@@ -36,6 +36,8 @@ use move_vm_types::{
     values::{Locals, Reference, VMValueCast, Value},
 };
 use std::{borrow::Borrow, collections::BTreeSet, sync::Arc};
+use move_binary_format::call_trace::CallTraces;
+use crate::interpreter::InterpreterImpl;
 
 /// An instantiation of the MoveVM.
 pub(crate) struct VMRuntime {
@@ -520,6 +522,94 @@ impl VMRuntime {
             extensions,
         )?;
         Ok(())
+    }
+
+    pub(crate) fn call_trace_from_script(
+        &self,
+        script: impl Borrow<[u8]>,
+        ty_args: Vec<TypeTag>,
+        serialized_args: Vec<impl Borrow<[u8]>>,
+        data_store: &mut TransactionDataCache,
+        module_store: &LegacyModuleStorageAdapter,
+        gas_meter: &mut impl GasMeter,
+        traversal_context: &mut TraversalContext,
+        extensions: &mut NativeContextExtensions,
+        code_storage: &impl CodeStorage,
+    ) -> VMResult<CallTraces> {
+        // Load the script first, verify it, and then execute the entry-point main function.
+        let main = self.loader.load_script(
+            script.borrow(),
+            &ty_args,
+            data_store,
+            module_store,
+            code_storage,
+        )?;
+
+        let ty_builder = self.loader().ty_builder();
+        let ty_args = main.ty_args();
+
+        let param_tys = main
+            .param_tys()
+            .iter()
+            .map(|ty| ty_builder.create_ty_with_subst(ty, ty_args))
+            .collect::<PartialVMResult<Vec<_>>>()
+            .map_err(|err| err.finish(Location::Undefined))?;
+
+        let (dummy_locals, deserialized_args) = self
+            .deserialize_args(module_store, code_storage, param_tys, serialized_args)
+            .map_err(|e| e.finish(Location::Undefined))?;
+
+        // execute the function
+        InterpreterImpl::call_trace(
+            main,
+            deserialized_args,
+            data_store,
+            module_store,
+            code_storage,
+            gas_meter,
+            traversal_context,
+            extensions,
+            &self.loader,
+        )
+    }
+
+    pub(crate) fn call_trace(
+        &self,
+        function: LoadedFunction,
+        serialized_args: Vec<impl Borrow<[u8]>>,
+        data_store: &mut TransactionDataCache,
+        module_store: &LegacyModuleStorageAdapter,
+        gas_meter: &mut impl GasMeter,
+        traversal_context: &mut TraversalContext,
+        extensions: &mut NativeContextExtensions,
+        module_storage: &impl ModuleStorage,
+    ) -> VMResult<CallTraces> {
+        let ty_builder = self.loader().ty_builder();
+        let ty_args = function.ty_args();
+
+        let param_tys = function
+            .param_tys()
+            .iter()
+            .map(|ty| ty_builder.create_ty_with_subst(ty, ty_args))
+            .collect::<PartialVMResult<Vec<_>>>()
+            .map_err(|err| err.finish(Location::Undefined))?;
+
+        let (dummy_locals, deserialized_args) = self
+            .deserialize_args(module_store, module_storage, param_tys, serialized_args)
+            .map_err(|e| e.finish(Location::Undefined))?;
+
+
+        InterpreterImpl::call_trace(
+            function,
+            deserialized_args,
+            data_store,
+            module_store,
+            module_storage,
+            gas_meter,
+            traversal_context,
+            extensions,
+            &self.loader,
+        )
     }
 
     pub(crate) fn loader(&self) -> &Loader {
