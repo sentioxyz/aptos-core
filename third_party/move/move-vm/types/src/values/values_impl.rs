@@ -3895,4 +3895,8 @@ impl Value {
     pub fn as_move_value(&self, layout: &MoveTypeLayout) -> MoveValue {
         self.0.as_move_value(layout)
     }
+
+    pub fn copy_value(&self) -> Self {
+        Self(self.0.copy_value().unwrap())
+    }
 }

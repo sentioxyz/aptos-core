@@ -30,6 +30,7 @@ use move_vm_types::{
     values::{GlobalValue, Value},
 };
 use std::{borrow::Borrow, sync::Arc};
+use move_core_types::call_trace::CallTraces;
 
 pub struct Session<'r, 'l> {
     pub(crate) move_vm: &'l MoveVM,
@@ -530,6 +531,46 @@ impl<'r, 'l> Session<'r, 'l> {
                 traversal_context,
                 script.borrow(),
             )
+    }
+
+    pub fn call_trace_from_script(
+        &mut self,
+        script: impl Borrow<[u8]>,
+        ty_args: Vec<TypeTag>,
+        args: Vec<impl Borrow<[u8]>>,
+        gas_meter: &mut impl GasMeter,
+    ) -> VMResult<CallTraces> {
+        self.move_vm.runtime.call_trace_from_script(
+            script,
+            ty_args,
+            args,
+            &mut self.data_cache,
+            &self.module_store,
+            gas_meter,
+            &mut self.native_extensions,
+        )
+    }
+
+    pub fn call_trace(
+        &mut self,
+        module: &ModuleId,
+        function_name: &IdentStr,
+        ty_args: Vec<TypeTag>,
+        args: Vec<impl Borrow<[u8]>>,
+        gas_meter: &mut impl GasMeter
+    ) -> VMResult<CallTraces> {
+        let bypass_declared_entry_check = true;
+        self.move_vm.runtime.call_trace(
+            module,
+            function_name,
+            ty_args,
+            args,
+            &mut self.data_cache,
+            &self.module_store,
+            gas_meter,
+            &mut self.native_extensions,
+            bypass_declared_entry_check,
+        )
     }
 }
 

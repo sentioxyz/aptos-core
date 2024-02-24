@@ -3,7 +3,7 @@
 
 use crate::{AptosValidatorInterface, FilterCondition};
 use anyhow::{anyhow, Result};
-use aptos_api_types::{AptosError, AptosErrorCode};
+use aptos_api_types::{AptosError, AptosErrorCode, HashValue, TransactionData, TransactionOnChainData};
 use aptos_framework::{
     natives::code::{PackageMetadata, PackageRegistry},
     APTOS_PACKAGES,
@@ -24,6 +24,7 @@ use aptos_types::{
 use async_recursion::async_recursion;
 use move_core_types::language_storage::ModuleId;
 use std::collections::{BTreeMap, HashMap};
+use std::str::FromStr;
 
 pub struct RestDebuggerInterface(Client);
 
@@ -360,6 +361,41 @@ impl AptosValidatorInterface for RestDebuggerInterface {
             }
         }
         return Ok(txns);
+    }
+
+    async fn get_transaction_by_hash(&self, hash: String) -> Result<TransactionOnChainData> {
+        match self.0.get_transaction_by_hash_bcs(HashValue::from_str(hash.as_str()).unwrap().0).await {
+            Ok(resp) => {
+                match resp.into_inner() {
+                    TransactionData::OnChain(data) => {
+                        Ok(data)
+                    }
+                    TransactionData::Pending(_) => {
+                        Err(anyhow!("Transaction is in pending status"))
+                    }
+                }
+            }
+            Err(err) => match err {
+                RestError::Api(AptosErrorResponse {
+                                   error:
+                                   AptosError {
+                                       error_code: AptosErrorCode::StateValueNotFound,
+                                       ..
+                                   },
+                                   ..
+                               }) => Err(anyhow!(err)),
+                _ => Err(anyhow!(err)),
+            },
+        }
+    }
+
+    async fn get_package_registry(&self, account: AccountAddress, version: Version) -> Result<Option<PackageRegistry>> {
+        Ok(Some(
+            self.0
+                .get_account_resource_at_version_bcs::<PackageRegistry>(account, "0x1::code::PackageRegistry", version)
+                .await?
+                .into_inner()
+        ))
     }
 
     async fn get_latest_version(&self) -> Result<Version> {

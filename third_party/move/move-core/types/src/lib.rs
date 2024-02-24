@@ -25,3 +25,4 @@ pub mod u256;
 mod unit_tests;
 pub mod value;
 pub mod vm_status;
+pub mod call_trace;

@@ -32,6 +32,7 @@ use move_vm_types::{
     values::{Locals, Reference, VMValueCast, Value},
 };
 use std::{borrow::Borrow, collections::BTreeSet, sync::Arc};
+use move_core_types::call_trace::CallTraces;
 
 /// An instantiation of the MoveVM.
 pub(crate) struct VMRuntime {
@@ -551,6 +552,122 @@ impl VMRuntime {
             extensions,
         )?;
         Ok(())
+    }
+
+    pub(crate) fn call_trace_from_script(
+        &self,
+        script: impl Borrow<[u8]>,
+        ty_args: Vec<TypeTag>,
+        serialized_args: Vec<impl Borrow<[u8]>>,
+        data_store: &mut TransactionDataCache,
+        module_store: &ModuleStorageAdapter,
+        gas_meter: &mut impl GasMeter,
+        extensions: &mut NativeContextExtensions,
+    ) -> VMResult<CallTraces> {
+        // load the script, perform verification
+        let (
+            func,
+            LoadedFunctionInstantiation {
+                type_arguments,
+                parameters,
+                return_: _,
+            },
+        ) = self
+            .loader
+            .load_script(script.borrow(), &ty_args, data_store, module_store)?;
+
+        let arg_types = parameters
+            .into_iter()
+            .map(|ty| ty.subst(&type_arguments))
+            .collect::<PartialVMResult<Vec<_>>>()
+            .map_err(|err| err.finish(Location::Undefined))?;
+        let (_, deserialized_args) = self
+            .deserialize_args(module_store, arg_types, serialized_args)
+            .map_err(|e| e.finish(Location::Undefined))?;
+
+        // execute the function
+        Interpreter::call_trace(
+            func,
+            type_arguments,
+            deserialized_args,
+            data_store,
+            module_store,
+            gas_meter,
+            extensions,
+            &self.loader,
+        )
+    }
+
+    pub(crate) fn call_trace(
+        &self,
+        module: &ModuleId,
+        function_name: &IdentStr,
+        ty_args: Vec<TypeTag>,
+        serialized_args: Vec<impl Borrow<[u8]>>,
+        data_store: &mut TransactionDataCache,
+        module_store: &ModuleStorageAdapter,
+        gas_meter: &mut impl GasMeter,
+        extensions: &mut NativeContextExtensions,
+        bypass_declared_entry_check: bool,
+    ) -> VMResult<CallTraces> {
+        // load the function
+        let (module, function, function_instantiation) =
+            self.loader
+                .load_function(module, function_name, &ty_args, data_store, module_store)?;
+
+        // load the function
+        let LoadedFunctionInstantiation {
+            type_arguments,
+            parameters,
+            return_: _,
+        } = function_instantiation;
+
+        use move_binary_format::{binary_views::BinaryIndexedView, file_format::SignatureIndex};
+        fn check_is_entry(
+            _resolver: &BinaryIndexedView,
+            is_entry: bool,
+            _parameters_idx: SignatureIndex,
+            _return_idx: Option<SignatureIndex>,
+        ) -> PartialVMResult<()> {
+            if is_entry {
+                Ok(())
+            } else {
+                Err(PartialVMError::new(
+                    StatusCode::EXECUTE_ENTRY_FUNCTION_CALLED_ON_NON_ENTRY_FUNCTION,
+                ))
+            }
+        }
+        let additional_signature_checks = if bypass_declared_entry_check {
+            move_bytecode_verifier::no_additional_script_signature_checks
+        } else {
+            check_is_entry
+        };
+
+        script_signature::verify_module_function_signature_by_name(
+            module.module(),
+            IdentStr::new(function.as_ref().name()).expect(""),
+            additional_signature_checks,
+        )?;
+
+        let arg_types = parameters
+            .into_iter()
+            .map(|ty| ty.subst(&type_arguments))
+            .collect::<PartialVMResult<Vec<_>>>()
+            .map_err(|err| err.finish(Location::Undefined))?;
+        let (_dummy_locals, deserialized_args) = self
+            .deserialize_args(module_store, arg_types, serialized_args)
+            .map_err(|e| e.finish(Location::Undefined))?;
+
+        Interpreter::call_trace(
+            function,
+            type_arguments,
+            deserialized_args,
+            data_store,
+            module_store,
+            gas_meter,
+            extensions,
+            &self.loader,
+        )
     }
 
     pub(crate) fn loader(&self) -> &Loader {
