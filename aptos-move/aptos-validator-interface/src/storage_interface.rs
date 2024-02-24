@@ -8,8 +8,8 @@ use aptos_config::config::{
     DEFAULT_MAX_NUM_NODES_PER_LRU_CACHE_SHARD, NO_OP_STORAGE_PRUNER_CONFIG,
 };
 use aptos_db::AptosDB;
-use aptos_framework::natives::code::PackageMetadata;
-use aptos_storage_interface::DbReader;
+use aptos_framework::natives::code::{PackageMetadata, PackageRegistry};
+use aptos_storage_interface::{AptosDbError, DbReader, MAX_REQUEST_LIMIT};
 use aptos_types::{
     account_address::AccountAddress,
     state_store::{state_key::StateKey, state_value::StateValue},
@@ -17,6 +17,7 @@ use aptos_types::{
 };
 use move_core_types::language_storage::ModuleId;
 use std::{collections::HashMap, path::Path, sync::Arc};
+use aptos_api_types::TransactionOnChainData;
 
 pub struct DBDebuggerInterface(Arc<dyn DbReader>);
 
