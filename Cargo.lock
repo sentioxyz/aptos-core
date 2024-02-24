@@ -4361,6 +4361,48 @@ dependencies = [
 ]
 
 [[package]]
+name = "aptos-tracer"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "aptos-api-types",
+ "aptos-config",
+ "aptos-crypto",
+ "aptos-db",
+ "aptos-framework",
+ "aptos-gas-profiling",
+ "aptos-logger",
+ "aptos-resource-viewer",
+ "aptos-rest-client",
+ "aptos-storage-interface",
+ "aptos-types",
+ "aptos-utils",
+ "aptos-validator-interface",
+ "aptos-vm",
+ "aptos-vm-logging",
+ "aptos-vm-types",
+ "bcs 0.1.4",
+ "clap 4.5.21",
+ "codespan",
+ "hex",
+ "move-binary-format",
+ "move-bytecode-source-map",
+ "move-cli",
+ "move-compiler",
+ "move-core-types",
+ "move-resource-viewer",
+ "move-table-extension",
+ "move-vm-runtime",
+ "move-vm-test-utils",
+ "poem",
+ "reqwest 0.11.23",
+ "serde",
+ "serde_json",
+ "tokio",
+ "url",
+]
+
+[[package]]
 name = "aptos-transaction-benchmarks"
 version = "0.1.0"
 dependencies = [

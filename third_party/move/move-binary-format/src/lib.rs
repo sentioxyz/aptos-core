@@ -27,14 +27,16 @@ pub mod normalized;
 pub mod proptest_types;
 pub mod serializer;
 pub mod views;
+pub mod call_trace;
 
 #[cfg(test)]
 mod unit_tests;
 
 pub use file_format::CompiledModule;
+use serde::{Serialize, Deserialize};
 
 /// Represents a kind of index -- useful for error messages.
-#[derive(Copy, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(Copy, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 pub enum IndexKind {
     ModuleHandle,
     StructHandle,

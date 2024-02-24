@@ -53,6 +53,7 @@ use std::{collections::BTreeMap, future::Future, str::FromStr, time::Duration};
 use tokio::time::Instant;
 pub use types::{deserialize_from_prefixed_hex_string, Account, Resource};
 use url::Url;
+use reqwest::blocking::Client as BlockingClient;
 
 pub const DEFAULT_VERSION_PATH_BASE: &str = "v1/";
 const DEFAULT_MAX_WAIT_MS: u64 = 60000;
@@ -81,6 +82,7 @@ pub struct Client {
     inner: ReqwestClient,
     base_url: Url,
     version_path_base: String,
+    blocking_client: BlockingClient,
 }
 
 // TODO: Dedupe the pepper/prover request/response types with the ones defined in the service.
@@ -733,6 +735,204 @@ impl Client {
             None,
         )
         .await
+    }
+
+    pub fn get_index_bcs_sync(&self) -> AptosResult<Response<IndexResponseBcs>> {
+        let url = self.build_path("")?;
+        let response = self.get_bcs_sync(url)?;
+        Ok(response.and_then(|inner| bcs::from_bytes(&inner))?)
+    }
+
+    pub fn get_ledger_information_sync(&self) -> AptosResult<Response<State>> {
+        let response = self.get_index_bcs_sync()?.map(|r| State {
+            chain_id: r.chain_id,
+            epoch: r.epoch.into(),
+            version: r.ledger_version.into(),
+            timestamp_usecs: r.ledger_timestamp.into(),
+            oldest_ledger_version: r.oldest_ledger_version.into(),
+            oldest_block_height: r.oldest_block_height.into(),
+            block_height: r.block_height.into(),
+            cursor: None,
+        });
+        assert_eq!(response.inner().chain_id, response.state().chain_id);
+        assert_eq!(response.inner().epoch, response.state().epoch);
+        assert_eq!(response.inner().version, response.state().version);
+        assert_eq!(response.inner().block_height, response.state().block_height);
+
+        Ok(response)
+    }
+
+    pub fn get_transactions_bcs_sync(
+        &self,
+        start: Option<u64>,
+        limit: Option<u16>,
+    ) -> AptosResult<Response<Vec<TransactionOnChainData>>> {
+        let url = self.build_path("transactions")?;
+        let response = self.get_bcs_with_page_sync(url, start, limit)?;
+        Ok(response.and_then(|inner| bcs::from_bytes(&inner))?)
+    }
+
+    pub fn get_transaction_by_hash_bcs_sync(
+        &self,
+        hash: HashValue,
+    ) -> AptosResult<Response<TransactionData>> {
+        let response = self.get_transaction_by_hash_bcs_inner_sync(hash)?;
+        let response = self.check_and_parse_bcs_response_sync(response)?;
+        Ok(response.and_then(|inner| bcs::from_bytes(&inner))?)
+    }
+
+    pub fn get_transaction_by_hash_bcs_inner_sync(
+        &self,
+        hash: HashValue,
+    ) -> AptosResult<reqwest::blocking::Response> {
+        let url = self.build_path(&format!("transactions/by_hash/{}", hash.to_hex_literal()))?;
+        let response = self.blocking_client.get(url).header(ACCEPT, BCS).send()?;
+        Ok(response)
+    }
+
+    pub fn get_account_transactions_bcs_sync(
+        &self,
+        address: AccountAddress,
+        start: Option<u64>,
+        limit: Option<u16>,
+    ) -> AptosResult<Response<Vec<TransactionOnChainData>>> {
+        let url = self.build_path(&format!("accounts/{}/transactions", address))?;
+        let response = self.get_bcs_with_page_sync(url, start, limit)?;
+        Ok(response.and_then(|inner| bcs::from_bytes(&inner))?)
+    }
+
+    pub fn get_account_resources_at_version_bcs_sync(
+        &self,
+        address: AccountAddress,
+        version: u64,
+    ) -> AptosResult<Response<BTreeMap<StructTag, Vec<u8>>>> {
+        self.paginate_with_cursor_bcs_sync(
+            &format!("accounts/{}/resources", address),
+            RESOURCES_PER_CALL_PAGINATION,
+            Some(version),
+        )
+    }
+
+    pub fn get_account_resource_at_version_bcs_sync<T: DeserializeOwned>(
+        &self,
+        address: AccountAddress,
+        resource_type: &str,
+        version: u64,
+    ) -> AptosResult<Response<T>> {
+        let url = self.build_path(&format!(
+            "accounts/{}/resource/{}?ledger_version={}",
+            address, resource_type, version
+        ))?;
+
+        let response = self.get_bcs_sync(url)?;
+        Ok(response.and_then(|inner| bcs::from_bytes(&inner))?)
+    }
+
+    pub fn get_raw_state_value_sync(
+        &self,
+        state_key: &StateKey,
+        version: u64,
+    ) -> AptosResult<Response<Vec<u8>>> {
+        let url = self.build_path(&format!(
+            "experimental/state_values/raw?ledger_version={}",
+            version
+        ))?;
+        let data = json!({
+            "key": hex::encode(bcs::to_bytes(state_key)?),
+        });
+
+        let response = self.post_bcs_sync(url, data)?;
+        Ok(response.map(|inner| inner.to_vec()))
+    }
+
+    fn check_response_sync(
+        &self,
+        response: reqwest::blocking::Response,
+    ) -> AptosResult<(reqwest::blocking::Response, State)> {
+        if !response.status().is_success() {
+            Err(parse_error_sync(response))
+        } else {
+            let state = parse_state_sync(&response)?;
+
+            Ok((response, state))
+        }
+    }
+
+    fn get_bcs_sync(&self, url: Url) -> AptosResult<Response<bytes::Bytes>> {
+        let response = self.blocking_client.get(url).header(ACCEPT, BCS).send()?;
+        self.check_and_parse_bcs_response_sync(response)
+    }
+
+    fn post_bcs_sync(
+        &self,
+        url: Url,
+        data: serde_json::Value,
+    ) -> AptosResult<Response<bytes::Bytes>> {
+        let response = self
+            .blocking_client
+            .post(url)
+            .header(ACCEPT, BCS)
+            .json(&data)
+            .send()?;
+        self.check_and_parse_bcs_response_sync(response)
+    }
+
+    fn get_bcs_with_page_sync(
+        &self,
+        url: Url,
+        start: Option<u64>,
+        limit: Option<u16>,
+    ) -> AptosResult<Response<bytes::Bytes>> {
+        let mut request = self.blocking_client.get(url).header(ACCEPT, BCS);
+        if let Some(start) = start {
+            request = request.query(&[("start", start)])
+        }
+
+        if let Some(limit) = limit {
+            request = request.query(&[("limit", limit)])
+        }
+
+        let response = request.send()?;
+        self.check_and_parse_bcs_response_sync(response)
+    }
+
+    fn check_and_parse_bcs_response_sync(
+        &self,
+        response: reqwest::blocking::Response,
+    ) -> AptosResult<Response<bytes::Bytes>> {
+        let (response, state) = self.check_response_sync(response)?;
+        Ok(Response::new(response.bytes()?, state))
+    }
+
+    pub fn paginate_with_cursor_bcs_sync<T: for<'a> Deserialize<'a> + Ord>(
+        &self,
+        base_path: &str,
+        limit_per_request: u64,
+        ledger_version: Option<u64>,
+    ) -> AptosResult<Response<BTreeMap<T, Vec<u8>>>> {
+        let mut result = BTreeMap::new();
+        let mut cursor: Option<String> = None;
+
+        loop {
+            let url = self.build_url_for_pagination(
+                base_path,
+                limit_per_request,
+                ledger_version,
+                &cursor,
+            )?;
+            let response: Response<BTreeMap<T, Vec<u8>>> = self
+                .get_bcs_sync(url)?
+                .and_then(|inner| bcs::from_bytes(&inner))?;
+            cursor = response.state().cursor.clone();
+            if cursor.is_none() {
+                break Ok(response.map(|mut v| {
+                    result.append(&mut v);
+                    result
+                }));
+            } else {
+                result.extend(response.into_inner());
+            }
+        }
     }
 
     /// Implementation of waiting for a transaction
@@ -1937,6 +2137,7 @@ impl From<(ReqwestClient, Url)> for Client {
             inner,
             base_url,
             version_path_base: DEFAULT_VERSION_PATH_BASE.to_string(),
+            blocking_client: BlockingClient::new(),
         }
     }
 }
@@ -1965,6 +2166,25 @@ async fn parse_error(response: reqwest::Response) -> RestError {
     let status_code = response.status();
     let maybe_state = parse_state_optional(&response);
     match response.json::<AptosError>().await {
+        Ok(error) => (error, maybe_state, status_code).into(),
+        Err(e) => RestError::Http(status_code, e),
+    }
+}
+
+fn parse_state_sync(response: &reqwest::blocking::Response) -> AptosResult<State> {
+    Ok(State::from_headers(response.headers())?)
+}
+
+fn parse_state_optional_sync(response: &reqwest::blocking::Response) -> Option<State> {
+    State::from_headers(response.headers())
+        .map(Some)
+        .unwrap_or(None)
+}
+
+fn parse_error_sync(response: reqwest::blocking::Response) -> RestError {
+    let status_code = response.status();
+    let maybe_state = parse_state_optional_sync(&response);
+    match response.json::<AptosError>() {
         Ok(error) => (error, maybe_state, status_code).into(),
         Err(e) => RestError::Http(status_code, e),
     }
