@@ -141,6 +141,7 @@ use std::{
     marker::Sync,
     sync::Arc,
 };
+use move_binary_format::call_trace::CallTraces;
 
 static EXECUTION_CONCURRENCY_LEVEL: OnceCell<usize> = OnceCell::new();
 static NUM_EXECUTION_SHARD: OnceCell<usize> = OnceCell::new();
@@ -2284,6 +2285,141 @@ impl AptosVM {
         }
     }
 
+    pub fn get_call_trace(
+        state_view: &impl StateView,
+        txn_payload: &TransactionPayload,
+        txn_metadata: &TransactionMetadata,
+        max_gas_amount: u64,
+    ) -> anyhow::Result<CallTraces> {
+        let env = AptosEnvironment::new(state_view);
+        let vm = AptosVM::new(&env, state_view);
+
+        let log_context = AdapterLogSchema::new(state_view.id(), 0);
+
+        let vm_gas_params = match vm.gas_params(&log_context) {
+            Ok(gas_params) => gas_params.vm.clone(),
+            Err(err) => {
+                return Err(anyhow::Error::msg(format!("{}", err)))
+            },
+        };
+        let storage_gas_params = match vm.storage_gas_params(&log_context) {
+            Ok(gas_params) => gas_params.clone(),
+            Err(err) => {
+                return Err(anyhow::Error::msg(format!("{}", err)))
+            },
+        };
+
+        let mut gas_meter = make_prod_gas_meter(
+            vm.gas_feature_version(),
+            vm_gas_params,
+            storage_gas_params,
+            /* is_approved_gov_script */ false,
+            max_gas_amount.into(),
+            &NoopBlockSynchronizationKillSwitch {},
+        );
+
+        let resolver = state_view.as_move_resolver();
+        let module_storage = state_view.as_aptos_code_storage(&env);
+
+        let mut session = vm.new_session(&resolver, SessionId::Void, None);
+        match txn_payload {
+            TransactionPayload::Script(script) => {
+                let func = session.load_script(&module_storage, script.code(), script.ty_args())?;
+                let traversal_storage = TraversalStorage::new();
+                let mut traversal_context = TraversalContext::new(&traversal_storage);
+
+                // Create SerializedSigners from txn_metadata.senders()
+                let senders_serialized: Vec<Vec<u8>> = txn_metadata
+                    .senders()
+                    .iter()
+                    .map(|addr| serialized_signer(addr))
+                    .collect();
+                let serialized_signers = SerializedSigners::new(
+                    senders_serialized,
+                    txn_metadata.fee_payer().as_ref().map(|addr| serialized_signer(addr)),
+                );
+
+                let args = verifier::transaction_arg_validation::validate_combine_signer_and_txn_args(
+                    &mut session,
+                    &module_storage,
+                    &serialized_signers,
+                    convert_txn_args(script.args()),
+                    &func,
+                    vm.features().is_enabled(FeatureFlag::STRUCT_CONSTRUCTORS),
+                )?;
+                let call_trace_res = session.call_trace_from_script(
+                    script.code(),
+                    script.ty_args().to_vec(),
+                    args,
+                    &mut gas_meter,
+                    &mut traversal_context,
+                    &module_storage,
+                );
+                match call_trace_res {
+                    Ok(call_trace) => {
+                        Ok(call_trace)
+                    }
+                    Err(err) => {
+                        Err(anyhow::Error::msg(err.into_vm_status()))
+                    }
+                }
+            }
+            TransactionPayload::ModuleBundle(_) => {
+                unimplemented!()
+            }
+            TransactionPayload::EntryFunction(entry_func) => {
+                let module_id = entry_func.module().clone();
+                let func_name = entry_func.function().to_owned();
+                let type_args = entry_func.ty_args().to_vec();
+                let arguments = entry_func.args().to_vec();
+
+                Self::call_trace_function_in_vm(
+                    &mut session,
+                    &vm,
+                    txn_metadata.senders(),
+                    module_id,
+                    func_name,
+                    type_args,
+                    arguments,
+                    &mut gas_meter,
+                    &module_storage)
+            }
+            TransactionPayload::Multisig(payload) => {
+                let traversal_storage = TraversalStorage::new();
+                let mut traversal_context = TraversalContext::new(&traversal_storage);
+
+                let unreachable_error = VMStatus::error(StatusCode::UNREACHABLE, None);
+                let provided_payload = if let Some(payload) = &payload.transaction_payload {
+                    bcs::to_bytes(&payload).map_err(|_| unreachable_error.clone())?
+                } else {
+                    bcs::to_bytes::<Vec<u8>>(&vec![]).map_err(|_| unreachable_error)?
+                };
+
+                let call_trace_res = session.call_trace(
+                    &MULTISIG_ACCOUNT_MODULE,
+                    VALIDATE_MULTISIG_TRANSACTION,
+                    vec![],
+                    serialize_values(&vec![
+                        MoveValue::Signer(txn_metadata.sender),
+                        MoveValue::Address(payload.multisig_address),
+                        MoveValue::vector_u8(provided_payload),
+                    ]),
+                    &mut UnmeteredGasMeter,
+                    &mut traversal_context,
+                    &module_storage,
+                );
+                match call_trace_res {
+                    Ok(call_trace) => {
+                        Ok(call_trace)
+                    }
+                    Err(err) => {
+                        Err(anyhow::Error::msg(err.into_vm_status()))
+                    }
+                }
+            }
+        }
+    }
+
     pub fn execute_view_function(
         state_view: &impl StateView,
         module_id: ModuleId,
@@ -2337,6 +2473,57 @@ impl AptosVM {
         match execution_result {
             Ok(result) => ViewFunctionOutput::new(Ok(result), gas_used),
             Err(e) => ViewFunctionOutput::new(Err(e), gas_used),
+        }
+    }
+
+    fn call_trace_function_in_vm(
+        session: &mut SessionExt,
+        vm: &AptosVM,
+        senders: Vec<AccountAddress>,
+        module_id: ModuleId,
+        func_name: Identifier,
+        type_args: Vec<TypeTag>,
+        arguments: Vec<Vec<u8>>,
+        gas_meter: &mut impl AptosGasMeter,
+        module_storage: &impl AptosModuleStorage,
+    ) -> anyhow::Result<CallTraces> {
+        let func = session.load_function(module_storage, &module_id, &func_name, &type_args)?;
+        
+        // Create SerializedSigners from senders
+        let senders_serialized: Vec<Vec<u8>> = senders
+            .iter()
+            .map(|addr| serialized_signer(addr))
+            .collect();
+        let serialized_signers = SerializedSigners::new(senders_serialized, None);
+        
+        let args = verifier::transaction_arg_validation::validate_combine_signer_and_txn_args(
+            session,
+            module_storage,
+            &serialized_signers,
+            arguments,
+            &func,
+            vm.features().is_enabled(FeatureFlag::STRUCT_CONSTRUCTORS),
+        )?;
+        let storage = TraversalStorage::new();
+
+        let call_trace_res = session
+            .call_trace(
+                &module_id,
+                func_name.as_ident_str(),
+                type_args,
+                args,
+                gas_meter,
+                &mut TraversalContext::new(&storage),
+                module_storage,
+            );
+
+        match call_trace_res {
+            Ok(call_trace) => {
+                Ok(call_trace)
+            }
+            Err(err) => {
+                Err(anyhow::Error::msg(err.into_vm_status()))
+            }
         }
     }
 
