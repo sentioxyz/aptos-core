@@ -614,9 +614,7 @@ impl Interpreter {
                             }
                         }).map(|v: Result<MoveValue, PartialVMError>| v.unwrap_or(MoveValue::U8(0))).collect(),
                         outputs: vec![],
-                        type_args: current_frame.ty_args().into_iter().map(|ty| {
-                            loader.type_to_type_tag(ty).unwrap().to_string()
-                        }).collect(),
+                        type_args: vec![],
                         sub_traces: CallTraces::new(),
                     }).map_err(|_e| {
                         let err = PartialVMError::new(StatusCode::ABORTED);
@@ -710,7 +708,7 @@ impl Interpreter {
                             }
                         }).map(|v: Result<MoveValue, PartialVMError>| v.unwrap_or(MoveValue::U8(0))).collect(),
                         outputs: vec![],
-                        type_args: current_frame.ty_args().into_iter().map(|ty| {
+                        type_args: ty_args.iter().map(|ty| {
                             loader.type_to_type_tag(ty).unwrap().to_string()
                         }).collect(),
                         sub_traces: CallTraces::new(),
