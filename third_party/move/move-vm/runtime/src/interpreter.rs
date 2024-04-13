@@ -46,6 +46,7 @@ use std::{
     sync::Arc,
 };
 use move_core_types::call_trace::{InternalCallTrace, CallTraces};
+use move_core_types::identifier::Identifier;
 use move_core_types::value::MoveValue;
 
 macro_rules! set_err_info {
@@ -411,11 +412,15 @@ impl Interpreter {
             .enter_function(&current_frame, current_frame.function.as_ref())
             .map_err(|e| self.set_location(e))?;
 
+        let mut current_module_id = current_frame.function.module_id().unwrap_or(&ModuleId::new(
+            AccountAddress::ONE,
+            Identifier::new("script".to_string()).unwrap(),
+        )).to_string();
         call_traces.push(InternalCallTrace {
-            from_module_id: current_frame.function.module_id().unwrap().to_string(),
+            from_module_id: current_module_id.clone(),
             pc: 0,
             fdef_idx: current_frame.function.index().0 as u16,
-            module_id: current_frame.function.module_id().unwrap().to_string(),
+            module_id: current_module_id,
             func_name: current_frame.function.name().to_string(),
             inputs: args_1.into_iter().zip(current_frame.function.param_tys()).map(|(value, ty)| {
                 let (ty, value) = match ty {
@@ -579,8 +584,12 @@ impl Interpreter {
                     for val in self.operand_stack.last_n(func.param_count()).unwrap() {
                         inputs.push(val.copy_value());
                     }
+                    current_module_id = current_frame.function.module_id().unwrap_or(&ModuleId::new(
+                        AccountAddress::ONE,
+                        Identifier::new("script".to_string()).unwrap(),
+                    )).to_string();
                     call_traces.push(InternalCallTrace {
-                        from_module_id: current_frame.function.module_id().unwrap().to_string(),
+                        from_module_id: current_module_id.clone(),
                         pc: current_frame.pc,
                         fdef_idx: current_frame.function.index().0 as u16,
                         module_id: module_id.to_string(),
@@ -673,8 +682,12 @@ impl Interpreter {
                     for val in self.operand_stack.last_n(func.param_count()).unwrap() {
                         inputs.push(val.copy_value());
                     }
+                    current_module_id = current_frame.function.module_id().unwrap_or(&ModuleId::new(
+                        AccountAddress::ONE,
+                        Identifier::new("script".to_string()).unwrap(),
+                    )).to_string();
                     call_traces.push(InternalCallTrace {
-                        from_module_id: current_frame.function.module_id().unwrap().to_string(),
+                        from_module_id: current_module_id,
                         pc: current_frame.pc,
                         fdef_idx: current_frame.function.index().0 as u16,
                         module_id: module_id.to_string(),
