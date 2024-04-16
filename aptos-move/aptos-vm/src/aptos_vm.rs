@@ -2546,8 +2546,46 @@ impl AptosVM {
                     }
                 }
             }
-            TransactionPayload::Multisig(_) => {
-                unimplemented!()
+            TransactionPayload::Multisig(payload) => {
+                match &payload.transaction_payload {
+                    None => Err(anyhow::Error::msg(VMStatus::error(StatusCode::MISSING_DATA, None))),
+                    Some(multisig_payload) => {
+                        match multisig_payload {
+                            MultisigTransactionPayload::EntryFunction(entry_func) => {
+                                let module_id = entry_func.module().clone();
+                                let func_name = entry_func.function().to_owned();
+                                let type_args = entry_func.ty_args().to_vec();
+                                let arguments = entry_func.args().to_vec();
+
+                                let function = session.load_function(
+                                    &module_id,
+                                    &func_name,
+                                    &type_args,
+                                )?;
+                                let struct_constructors = vm.features()
+                                    .is_enabled(FeatureFlag::STRUCT_CONSTRUCTORS);
+                                let args = verifier::transaction_arg_validation::validate_combine_signer_and_txn_args(
+                                    &mut session,
+                                    senders,
+                                    arguments,
+                                    &function,
+                                    struct_constructors,
+                                )?;
+                                let call_trace_res = session.call_trace(
+                                    &module_id, &func_name, type_args, args, &mut gas_meter);
+                                match call_trace_res {
+                                    Ok(call_trace) => {
+                                        Ok(call_trace)
+                                    }
+                                    Err(err) => {
+                                        Err(anyhow::Error::msg(err.into_vm_status()))
+                                    }
+                                }
+                            },
+                        }
+                    },
+                }
+
             }
         }
     }
