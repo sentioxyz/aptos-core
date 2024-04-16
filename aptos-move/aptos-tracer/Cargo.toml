@@ -43,3 +43,4 @@ reqwest = { workspace = true, features = ["blocking"] }
 hex = { workspace = true }
 aptos-utils = { workspace = true }
 aptos-api-types = { workspace = true }
+thiserror = "1.0.56"
