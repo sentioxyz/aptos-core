@@ -10,13 +10,14 @@ use move_core_types::{
     language_storage::ModuleId,
     vm_status::{self, StatusCode, StatusType, VMStatus},
 };
+use serde::{Deserialize, Serialize};
 use std::fmt;
 
 pub type VMResult<T> = ::std::result::Result<T, VMError>;
 pub type BinaryLoaderResult<T> = ::std::result::Result<T, PartialVMError>;
 pub type PartialVMResult<T> = ::std::result::Result<T, PartialVMError>;
 
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 pub enum Location {
     Undefined,
     Script,
@@ -25,7 +26,7 @@ pub enum Location {
 
 /// A representation of the execution state (e.g., stack trace) at an
 /// error point.
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 pub struct ExecutionState {
     stack_trace: Vec<(Option<ModuleId>, FunctionDefinitionIndex, CodeOffset)>,
     // we may consider adding more state if necessary
@@ -41,10 +42,10 @@ impl ExecutionState {
     }
 }
 
-#[derive(Clone, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 pub struct VMError(Box<VMError_>);
 
-#[derive(Clone, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 struct VMError_ {
     major_status: StatusCode,
     sub_status: Option<u64>,

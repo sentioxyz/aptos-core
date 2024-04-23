@@ -1,5 +1,6 @@
 use std::collections::HashSet;
-use crate::value::MoveValue;
+use move_core_types::value::MoveValue;
+use crate::errors::VMError;
 
 const CALL_STACK_SIZE_LIMIT: usize = 1024;
 
@@ -17,6 +18,7 @@ pub struct InternalCallTrace {
     pub type_args: Vec<String>,
     pub sub_traces: CallTraces,
     pub fdef_idx: u16,
+    pub error: Option<VMError>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -45,6 +47,11 @@ impl CallTraces {
     pub fn set_outputs(&mut self, outputs: Vec<MoveValue>) {
         let length = self.0.len();
         self.0[length - 1].outputs = outputs
+    }
+
+    pub fn set_error(&mut self, error: VMError) {
+        let length = self.0.len();
+        self.0[length - 1].error = Some(error)
     }
 
     pub fn push_call_trace(&mut self, call_trace: InternalCallTrace) {

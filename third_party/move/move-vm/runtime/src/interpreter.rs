@@ -45,7 +45,7 @@ use std::{
     fmt::Write,
     sync::Arc,
 };
-use move_core_types::call_trace::{InternalCallTrace, CallTraces};
+use move_binary_format::call_trace::{InternalCallTrace, CallTraces};
 use move_core_types::identifier::Identifier;
 use move_core_types::value::MoveValue;
 
@@ -455,6 +455,7 @@ impl Interpreter {
                 loader.type_to_type_tag(ty).unwrap().to_string()
             }).collect(),
             sub_traces: CallTraces::new(),
+            error: None,
         }).map_err(|_e| {
             let err = PartialVMError::new(StatusCode::ABORTED);
             let err = set_err_info!(current_frame, err);
@@ -468,7 +469,7 @@ impl Interpreter {
                     .execute_code(&resolver, &mut self, data_store, module_store, gas_meter)
                     .map_err(|err| self.attach_state_if_invariant_violation(err, &current_frame))?;
             match exit_code {
-                ExitCode::Return => {
+                Ok(ExitCode::Return) => {
                     let non_ref_vals = current_frame
                         .locals
                         .drop_all_values()
@@ -538,7 +539,7 @@ impl Interpreter {
                         return Ok(call_traces);
                     }
                 },
-                ExitCode::Call(fh_idx) => {
+                Ok(ExitCode::Call(fh_idx)) => {
                     let func = resolver
                         .function_from_handle(fh_idx)
                         .map_err(|e| self.set_location(e))?;
@@ -625,6 +626,7 @@ impl Interpreter {
                         outputs: vec![],
                         type_args: vec![],
                         sub_traces: CallTraces::new(),
+                        error: None,
                     }).map_err(|_e| {
                         let err = PartialVMError::new(StatusCode::ABORTED);
                         let err = set_err_info!(current_frame, err);
@@ -632,7 +634,7 @@ impl Interpreter {
                     })?;
                     self.set_new_call_frame(&mut current_frame, gas_meter, loader, func, vec![])?;
                 },
-                ExitCode::CallGeneric(idx) => {
+                Ok(ExitCode::CallGeneric(idx)) => {
                     let ty_args = resolver
                         .instantiate_generic_function(Some(gas_meter), idx, current_frame.ty_args())
                         .map_err(|e| set_err_info!(current_frame, e))?;
@@ -725,12 +727,21 @@ impl Interpreter {
                             loader.type_to_type_tag(ty).unwrap().to_string()
                         }).collect(),
                         sub_traces: CallTraces::new(),
+                        error: None,
                     }).map_err(|_e| {
                         let err = PartialVMError::new(StatusCode::ABORTED);
                         let err = set_err_info!(current_frame, err);
                         self.attach_state_if_invariant_violation(err, &current_frame)
                     })?;
                     self.set_new_call_frame(&mut current_frame, gas_meter, loader, func, ty_args)?;
+                },
+                Err(err) => {
+                    call_traces.set_error(err);
+                    while let Some(_) = self.call_stack.pop() {
+                        let top_call = call_traces.pop().unwrap();
+                        call_traces.push_call_trace(top_call);
+                    }
+                    return Ok(call_traces);
                 },
             }
         }

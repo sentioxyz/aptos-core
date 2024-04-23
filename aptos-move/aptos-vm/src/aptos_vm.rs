@@ -107,7 +107,7 @@ use std::{
     marker::Sync,
     sync::Arc,
 };
-use move_core_types::call_trace::CallTraces;
+use move_binary_format::call_trace::CallTraces;
 
 static EXECUTION_CONCURRENCY_LEVEL: OnceCell<usize> = OnceCell::new();
 static NUM_EXECUTION_SHARD: OnceCell<usize> = OnceCell::new();
