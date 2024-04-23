@@ -34,8 +34,7 @@ use move_vm_types::{
     values::{Locals, Reference, VMValueCast, Value},
 };
 use std::{borrow::Borrow, collections::BTreeSet, sync::Arc};
-use move_core_types::call_trace::CallTraces;
-use move_bytecode_verifier::script_signature;
+use move_binary_format::call_trace::CallTraces;
 
 /// An instantiation of the MoveVM.
 pub(crate) struct VMRuntime {

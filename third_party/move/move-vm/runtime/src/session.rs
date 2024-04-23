@@ -29,7 +29,7 @@ use move_vm_types::{
     values::{GlobalValue, Value},
 };
 use std::{borrow::Borrow, sync::Arc};
-use move_core_types::call_trace::CallTraces;
+use move_binary_format::call_trace::CallTraces;
 
 pub struct Session<'r, 'l> {
     pub(crate) move_vm: &'l MoveVM,
