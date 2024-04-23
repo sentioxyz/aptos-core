@@ -36,10 +36,10 @@ use aptos_framework::{unzip_metadata, unzip_metadata_str};
 use aptos_logger::{error, info};
 
 use aptos_vm::transaction_metadata::TransactionMetadata;
-use move_binary_format::file_format::{CodeOffset, FunctionDefinitionIndex, TableIndex};
+use move_binary_format::{errors::VMError, file_format::{CodeOffset, FunctionDefinitionIndex, TableIndex}};
 use move_bytecode_source_map::source_map::SourceMap;
 use move_core_types::account_address::AccountAddress;
-use move_core_types::call_trace::{InternalCallTrace};
+use move_binary_format::call_trace::{InternalCallTrace};
 use move_core_types::identifier::Identifier;
 use move_core_types::language_storage::ModuleId;
 use crate::converter::move_value_to_json;
@@ -356,6 +356,8 @@ pub struct CallTraceWithSource {
     pub calls: Vec<CallTraceWithSource>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub location: Option<Location>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<VMError>,
 }
 
 impl CallTraceWithSource {
@@ -370,6 +372,7 @@ impl CallTraceWithSource {
             type_args: vec![],
             calls: vec![],
             location: None,
+            error: None,
         }
     }
     
@@ -393,6 +396,7 @@ impl CallTraceWithSource {
                 CallTraceWithSource::from(sub_trace, package_registries)
             }).collect(),
             location: None,
+            error: call_trace.error.clone(),
         };
         package_registries.get(account.unwrap()).unwrap().packages.clone().into_iter().for_each(|package| {
             let matched_module = package.modules.into_iter().find(|module| {
@@ -446,6 +450,7 @@ impl CallTraceWithSource {
                 CallTraceWithSource::from_modules(sub_trace, modules_map)
             }).collect(),
             location: None,
+            error: call_trace.error.clone(),
         };
         let module = modules_map.get(call_trace.from_module_id.as_str());
         match module {
