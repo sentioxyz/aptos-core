@@ -359,7 +359,15 @@ pub struct CallTraceWithSource {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub location: Option<Location>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub error: Option<VMError>,
+    pub error: Option<CallTraceError>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct CallTraceError {
+    pub major_status: move_core_types::vm_status::StatusCode,
+    pub sub_status: Option<u64>,
+    pub message: Option<String>,
+    pub location: Option<Location>,
 }
 
 impl CallTraceWithSource {
@@ -386,6 +394,7 @@ impl CallTraceWithSource {
         let to_account = split_to_module.next();
         let to_module_name  = split_to_module.next();
         let mut files = Files::new();
+        let vm_error = call_trace.error.unwrap();
         let mut call_trace_with_source = CallTraceWithSource {
             from: account.unwrap().to_string(),
             contract_name: module_name.unwrap().to_string(),
@@ -398,7 +407,12 @@ impl CallTraceWithSource {
                 CallTraceWithSource::from(sub_trace, package_registries)
             }).collect(),
             location: None,
-            error: call_trace.error.clone(),
+            error: Some(CallTraceError {
+                major_status: vm_error.major_status(),
+                sub_status: vm_error.sub_status(),
+                message: vm_error.message().cloned(),
+                location: None, // TODO
+            }),
         };
         package_registries.get(account.unwrap()).unwrap().packages.clone().into_iter().for_each(|package| {
             let matched_module = package.modules.into_iter().find(|module| {
@@ -439,7 +453,6 @@ impl CallTraceWithSource {
         let mut split_to_module = call_trace.module_id.split("::");
         let to_account = split_to_module.next();
         let to_module_name  = split_to_module.next();
-        let mut files = Files::new();
         let mut call_trace_with_source = CallTraceWithSource {
             from: account.unwrap().to_string(),
             contract_name: module_name.unwrap().to_string(),
@@ -452,59 +465,81 @@ impl CallTraceWithSource {
                 CallTraceWithSource::from_modules(sub_trace, modules_map)
             }).collect(),
             location: None,
-            error: call_trace.error.clone(),
+            error: None,
         };
-        let module = modules_map.get(call_trace.from_module_id.as_str());
-        match module {
-            None => {}
-            Some(module_info) => {
-                if module_info.sourceMap.len() == 0 || module_info.source.len() == 0 {
-                    return call_trace_with_source;
-                }
-                let source_map = hex::decode(module_info.sourceMap.clone().strip_prefix("0x").unwrap()).unwrap();
-                let file_id = files.add(module_name.unwrap(), module_info.source.clone());
-                let deser_source_map = bcs::from_bytes::<SourceMap>(&source_map)
-                    .map_err(|_| format_err!("Error deserializing into source map"));
-                match deser_source_map {
-                    Ok(valid_source_map) => {
-                        let loc = valid_source_map.get_code_location(
-                            FunctionDefinitionIndex::new(call_trace.fdef_idx as TableIndex),
-                            CodeOffset::from(call_trace.pc));
-                        match loc {
-                            Ok(valid_loc) => {
-                                let start_loc = files.location(file_id, valid_loc.start()).unwrap_or_else(|_| {
-                                    error!("Error getting code location for call trace - {:?} : {:?}", call_trace, "start_loc is None");
-                                    return files.location(file_id, 0).unwrap();
-                                });
-                                let end_loc = files.location(file_id, valid_loc.end()).unwrap_or_else(|_| {
-                                    error!("Error getting code location for call trace - {:?} : {:?}", call_trace, "end_loc is None");
-                                    return files.location(file_id, 0).unwrap();
-                                });
-                                call_trace_with_source.location = Some(Location {
-                                    account: account.unwrap().to_string(),
-                                    module: module_name.unwrap().to_string(),
-                                    lines: Range {
-                                        start: Position { line: start_loc.line.0 as u32, column: start_loc.column.0 as u32 },
-                                        end: Position { line: end_loc.line.0 as u32, column: end_loc.column.0 as u32 }
-                                }});
-                            }
-                            Err(err) => {
-                                error!("Error getting code location for module - {:?}, function index - {:?}, pc - {:?} : {:?}",
-                                    call_trace.from_module_id,
-                                    call_trace.fdef_idx,
-                                    call_trace.pc,
-                                    err);
-                                return call_trace_with_source;
-                            }
+
+        let offset_to_loc =  |account: String, module_name: String, func_idx: FunctionDefinitionIndex, code_offset: CodeOffset| -> Option<Location> {
+            let module_id = account.to_owned() + "::" + &module_name;
+            let module_info = modules_map.get(module_id.as_str())?;
+            if module_info.sourceMap.len() == 0 || module_info.source.len() == 0 {
+                return None;
+            }
+            let mut files = Files::new();
+            let file_id = files.add(module_name.to_owned(), module_info.source.clone());
+            let source_map = hex::decode(module_info.sourceMap.clone().strip_prefix("0x").unwrap()).unwrap();
+            let deser_source_map = bcs::from_bytes::<SourceMap>(&source_map)
+                .map_err(|_| format_err!("Error deserializing into source map"));
+            match deser_source_map {
+                Ok(valid_source_map) => {
+                    let loc = valid_source_map.get_code_location(func_idx, code_offset);
+                    match loc {
+                        Ok(valid_loc) => {
+                            let start_loc = files.location(file_id, valid_loc.start()).unwrap_or_else(|_| {
+                                error!("Error getting code location for call trace - {:?} : {:?}", call_trace, "start_loc is None");
+                                return files.location(file_id, 0).unwrap();
+                            });
+                            let end_loc = files.location(file_id, valid_loc.end()).unwrap_or_else(|_| {
+                                error!("Error getting code location for call trace - {:?} : {:?}", call_trace, "end_loc is None");
+                                return files.location(file_id, 0).unwrap();
+                            });
+                            Some(Location {
+                                account,
+                                module: module_name,
+                                lines: Range {
+                                    start: Position { line: start_loc.line.0 as u32, column: start_loc.column.0 as u32 },
+                                    end: Position { line: end_loc.line.0 as u32, column: end_loc.column.0 as u32 }
+                            }})
+                        }
+                        Err(err) => {
+                            error!("Error getting code location for module - {:?}, function index - {:?}, pc - {:?} : {:?}",
+                                call_trace.from_module_id,
+                                call_trace.fdef_idx,
+                                call_trace.pc,
+                                err);
+                            None
                         }
                     }
-                    Err(err) => {
-                        error!("Error deserializing into source map: {:?}", err);
-                        return call_trace_with_source;
-                    }
+                }
+                Err(err) => {
+                    error!("Error deserializing into source map: {:?}", err);
+                    None
                 }
             }
+        };
+
+        if let Some(vm_error) = &call_trace.error {
+            let mut acc = String::from(account.unwrap());
+            let mut mod_name = String::from(module_name.unwrap());
+            let location = vm_error.location();
+            if let move_binary_format::errors::Location::Module(module) = location {
+                acc = module.address.to_canonical_string();
+                mod_name = module.name.to_string();
+            }
+            let offsets = vm_error.offsets()[0];
+            call_trace_with_source.error = Some(CallTraceError {
+                major_status: vm_error.major_status(),
+                sub_status: vm_error.sub_status(),
+                message: vm_error.message().cloned(),
+                location: offset_to_loc(acc, mod_name, offsets.0, offsets.1),
+            });
         }
+
+        call_trace_with_source.location = offset_to_loc(
+            account.unwrap().to_string(),
+            module_name.unwrap().to_string(),
+            FunctionDefinitionIndex::new(call_trace.fdef_idx as TableIndex), 
+            CodeOffset::from(call_trace.pc));
+        
         call_trace_with_source
     }
 }
