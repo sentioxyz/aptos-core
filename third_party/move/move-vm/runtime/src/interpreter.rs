@@ -503,7 +503,7 @@ impl Interpreter {
                             extensions,
                             func,
                             vec![],
-                        )?;
+                        ).map_err(|e| call_traces.set_error(e));
                         current_frame.pc += 1; // advance past the Call instruction in the caller
                         continue;
                     }
@@ -605,7 +605,7 @@ impl Interpreter {
                     if func.is_native() {
                         self.call_native(
                             &resolver, data_store, gas_meter, extensions, func, ty_args,
-                        )?;
+                        ).map_err(|e| call_traces.set_error(e));
                         current_frame.pc += 1; // advance past the Call instruction in the caller
                         continue;
                     }
