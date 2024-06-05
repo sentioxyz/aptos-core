@@ -466,8 +466,7 @@ impl Interpreter {
             let resolver = current_frame.resolver(loader, module_store);
             let exit_code =
                 current_frame //self
-                    .execute_code(&resolver, &mut self, data_store, module_store, gas_meter)
-                    .map_err(|err| self.attach_state_if_invariant_violation(err, &current_frame))?;
+                    .execute_code(&resolver, &mut self, data_store, module_store, gas_meter);
             match exit_code {
                 Ok(ExitCode::Return) => {
                     let non_ref_vals = current_frame
@@ -578,7 +577,7 @@ impl Interpreter {
                             extensions,
                             func,
                             vec![],
-                        )?;
+                        ).map_err(|e| call_traces.set_error(e));
                         continue;
                     }
                     let mut inputs = vec![];
@@ -677,7 +676,7 @@ impl Interpreter {
                             extensions,
                             func,
                             ty_args,
-                        )?;
+                        ).map_err(|e| call_traces.set_error(e));
                         continue;
                     }
                     let mut inputs = vec![];
