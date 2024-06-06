@@ -392,7 +392,6 @@ impl CallTraceWithSource {
         let to_account = split_to_module.next();
         let to_module_name  = split_to_module.next();
         let mut files = Files::new();
-        let vm_error = call_trace.error.unwrap();
         let mut call_trace_with_source = CallTraceWithSource {
             from: account.unwrap().to_string(),
             contract_name: module_name.unwrap().to_string(),
@@ -405,12 +404,18 @@ impl CallTraceWithSource {
                 CallTraceWithSource::from(sub_trace, package_registries)
             }).collect(),
             location: None,
-            error: Some(CallTraceError {
-                major_status: vm_error.major_status(),
-                sub_status: vm_error.sub_status(),
-                message: vm_error.message().cloned(),
-                location: None, // TODO
-            }),
+            error: {
+                if let Some(vm_error) = call_trace.error {
+                    Some(CallTraceError {
+                        major_status: vm_error.major_status(),
+                        sub_status: vm_error.sub_status(),
+                        message: vm_error.message().cloned(),
+                        location: None, // TODO
+                    })
+                } else {
+                    None
+                }
+            },
         };
         package_registries.get(account.unwrap()).unwrap().packages.clone().into_iter().for_each(|package| {
             let matched_module = package.modules.into_iter().find(|module| {
