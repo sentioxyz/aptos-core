@@ -194,8 +194,6 @@ target "aptos-tracer" {
   inherits   = ["_common"]
   dockerfile = "docker/builder/aptos-tracer.Dockerfile"
   target     = "aptos-tracer"
-  cache-from = generate_cache_from("aptos-tracer")
-  cache-to   = generate_cache_to("aptos-tracer")
   tags       = generate_tags("aptos-tracer")
 }
 
