@@ -2117,7 +2117,7 @@ impl AptosVM {
                                     .is_enabled(FeatureFlag::STRUCT_CONSTRUCTORS);
                                 let args = verifier::transaction_arg_validation::validate_combine_signer_and_txn_args(
                                     &mut session,
-                                    senders,
+                                    vec![payload.multisig_address],
                                     arguments,
                                     &function,
                                     struct_constructors,
