@@ -1,7 +1,7 @@
 // Copyright © Aptos Foundation
 // SPDX-License-Identifier: Apache-2.0
 
-use std::path::PathBuf;
+use std::{collections::HashMap, path::PathBuf};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -26,6 +26,9 @@ pub struct DebuggerServerConfig {
     #[serde(default = "DebuggerServerConfig::default_rest_endpoint")]
     pub rest_endpoint: String,
 
+    #[serde(default = "DebuggerServerConfig::default_rest_endpoint_map")]
+    pub rest_endpoint_map: HashMap<u16, String>,
+
     /// use db or not
     #[serde(default = "DebuggerServerConfig::default_use_db")]
     pub use_db: bool,
@@ -43,6 +46,7 @@ impl DebuggerServerConfig {
             listen_port: DebuggerServerConfig::default_listen_port(),
             db_path: DebuggerServerConfig::default_db_path(),
             rest_endpoint: DebuggerServerConfig::default_rest_endpoint(),
+            rest_endpoint_map: DebuggerServerConfig::default_rest_endpoint_map(),
             use_db: DebuggerServerConfig::default_use_db(),
             sentio_endpoint: DebuggerServerConfig::default_sentio_endpoint(),
         }
@@ -54,6 +58,10 @@ impl DebuggerServerConfig {
 
     pub fn set_rest_endpoint(&mut self, rest_endpoint: String) {
         self.rest_endpoint = rest_endpoint
+    }
+
+    pub fn set_rest_endpoints(&mut self, rest_endpoint_map: HashMap<u16, String>) {
+        self.rest_endpoint_map = rest_endpoint_map
     }
 
     pub fn set_use_db(&mut self, use_db: bool) {
@@ -80,6 +88,13 @@ impl DebuggerServerConfig {
 
     fn default_rest_endpoint() -> String {
         "https://fullnode.mainnet.aptoslabs.com/v1".to_string()
+    }
+
+    fn default_rest_endpoint_map() -> HashMap<u16, String> {
+        HashMap::from([
+            (1, "https://fullnode.mainnet.aptoslabs.com/v1".to_string()),
+            (2001, "https://aptos.testnet.suzuka.movementlabs.xyz/v1".to_string())
+        ])
     }
 
     fn default_use_db() -> bool {

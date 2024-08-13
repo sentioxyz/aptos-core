@@ -214,7 +214,7 @@ impl SyncAptosTracer {
     pub fn trace_transaction(
         &self,
         txn_hash: String,
-        chain_id: u8,
+        chain_id: u16,
     ) -> Result<CallTraceWithSource> {
         let txn_data = self.debugger.get_transaction_by_hash(txn_hash)?;
         let txn = txn_data.transaction;
