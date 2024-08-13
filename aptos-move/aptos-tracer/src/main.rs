@@ -7,6 +7,7 @@ use aptos_rest_client::Client;
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use url::Url;
+use std::collections::HashMap;
 
 #[derive(Subcommand)]
 pub enum Target {
@@ -15,7 +16,7 @@ pub enum Target {
     /// Use a local db instance to serve as query endpoint.
     DB { path: PathBuf, listen_address: Option<String>, listen_port: Option<u16> },
     /// Use a full node's rest api as query endpoint and run as a server.
-    ServerBasedOnRest { endpoint: String, listen_address: Option<String>, listen_port: Option<u16> },
+    ServerBasedOnRest { endpoints: String, listen_address: Option<String>, listen_port: Option<u16> },
 }
 #[derive(Parser)]
 pub struct Argument {
@@ -57,12 +58,19 @@ async fn main() -> Result<()> {
             }
             run_debugger_server(config).await
         },
-        Target::ServerBasedOnRest { endpoint, listen_address, listen_port } => {
+        Target::ServerBasedOnRest { endpoints, listen_address, listen_port } => {
             // run as a server if the target is DB
             let mut config = DebuggerServerConfig::default();
-            config.set_rest_endpoint(endpoint);
             config.set_use_db(false);
             config.set_sentio_endpoint(args.sentio_endpoint);
+
+            let mut endpoint_map: HashMap<u16, String> = HashMap::new(); 
+            let chain_to_endpoint: Vec<&str> = endpoints.split(',').collect();
+            for i in chain_to_endpoint.iter() {
+                let t: Vec<&str> = i.split('=').collect();
+                endpoint_map.insert(t[0].parse::<u16>().unwrap(), t[1].to_string());
+            }
+            config.set_rest_endpoints(endpoint_map);
             if let Some(address) = listen_address {
                 config.listen_address = address;
             }
