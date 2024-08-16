@@ -2445,7 +2445,7 @@ impl AptosVM {
     pub fn get_call_trace(
         state_view: &impl StateView,
         txn_payload: &TransactionPayload,
-        senders: Vec<AccountAddress>,
+        txn_metadata: &TransactionMetadata,
         max_gas_amount: u64,
     ) -> anyhow::Result<CallTraces> {
         let vm = AptosVM::new(state_view);
@@ -2476,7 +2476,8 @@ impl AptosVM {
         );
 
         let resolver = state_view.as_move_resolver();
-        let mut session = vm.new_session(&resolver, SessionId::Void, None);
+        let session_id = SessionId::prologue_meta(&txn_metadata);
+        let mut session = vm.new_session(&resolver, session_id, Some(txn_metadata.as_user_transaction_context()));
         match txn_payload {
             TransactionPayload::Script(script) => {
                 let loaded_func =
@@ -2490,7 +2491,7 @@ impl AptosVM {
                 let args =
                     verifier::transaction_arg_validation::validate_combine_signer_and_txn_args(
                         &mut session,
-                        senders,
+                        txn_metadata.senders(),
                         convert_txn_args(script.args()),
                         &loaded_func,
                         vm.features()
@@ -2530,7 +2531,7 @@ impl AptosVM {
                     .is_enabled(FeatureFlag::STRUCT_CONSTRUCTORS);
                 let args = verifier::transaction_arg_validation::validate_combine_signer_and_txn_args(
                     &mut session,
-                    senders,
+                    txn_metadata.senders(),
                     arguments,
                     &function,
                     struct_constructors,
