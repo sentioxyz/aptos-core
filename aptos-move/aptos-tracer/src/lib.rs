@@ -225,7 +225,7 @@ impl SyncAptosTracer {
                 let call_trace = AptosVM::get_call_trace(
                     &state_view,
                     user_txn.payload(),
-                    txn_metadata.senders(),
+                    &txn_metadata,
                     user_txn.max_gas_amount(),
                 ).map_err(|err| {
                     format_err!("Error getting call trace for txn_hash - {:?} : {:?}", txn_data.info.to_string(), err)
