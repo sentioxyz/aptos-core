@@ -2579,7 +2579,7 @@ impl AptosVM {
                                     struct_constructors,
                                 )?;
                                 let call_trace_res = session.call_trace(
-                                    &module_id, &func_name, type_args, args, &mut gas_meter);
+                                    &module_id, &func_name, type_args, args, &mut gas_meter, &mut traversal_context);
                                 match call_trace_res {
                                     Ok(call_trace) => {
                                         Ok(call_trace)
