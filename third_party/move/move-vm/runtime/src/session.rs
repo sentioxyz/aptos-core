@@ -588,6 +588,7 @@ impl<'r, 'l> Session<'r, 'l> {
         args: Vec<impl Borrow<[u8]>>,
         gas_meter: &mut impl GasMeter,
         traversal_context: &mut TraversalContext,
+        code_storage: &impl CodeStorage,
     ) -> VMResult<CallTraces> {
         self.move_vm.runtime.call_trace_from_script(
             script,
@@ -598,28 +599,38 @@ impl<'r, 'l> Session<'r, 'l> {
             gas_meter,
             traversal_context,
             &mut self.native_extensions,
+            code_storage,
         )
     }
 
     pub fn call_trace(
         &mut self,
-        module: &ModuleId,
+        module_id: &ModuleId,
         function_name: &IdentStr,
         ty_args: Vec<TypeTag>,
         args: Vec<impl Borrow<[u8]>>,
         gas_meter: &mut impl GasMeter,
         traversal_context: &mut TraversalContext,
+        module_storage: &impl ModuleStorage,
     ) -> VMResult<CallTraces> {
-        self.move_vm.runtime.call_trace(
-            module,
+        let func = self.move_vm.runtime.loader().load_function(
+            module_id,
             function_name,
-            ty_args,
+            &ty_args,
+            &mut self.data_cache,
+            &self.module_store,
+            module_storage,
+        )?;
+
+        self.move_vm.runtime.call_trace(
+            func,
             args,
             &mut self.data_cache,
             &self.module_store,
             gas_meter,
             traversal_context,
             &mut self.native_extensions,
+            module_storage,
         )
     }
 }

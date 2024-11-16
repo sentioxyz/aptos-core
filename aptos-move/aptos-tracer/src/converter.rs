@@ -26,7 +26,9 @@ pub fn move_value_to_json(val: MoveValue) -> Value {
                 Value::Array(fields.into_iter().map(|v| move_value_to_json(v)).collect())
             }
             MoveStruct::WithFields(fields) => struct_fields_to_json(fields),
-            MoveStruct::WithTypes { type_, fields } => struct_fields_to_json(fields),
+            MoveStruct::WithTypes { _type_, _fields } => struct_fields_to_json(_fields),
+            MoveStruct::RuntimeVariant(_, _) => Value::Null,
+            MoveStruct::WithVariantFields(_, _, _) => Value::Null,
         },
         MoveValue::Signer(add) => serde_json::to_value(add).unwrap(),
         MoveValue::U16(n) => serde_json::to_value(n).unwrap(),

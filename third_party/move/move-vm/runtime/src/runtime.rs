@@ -529,33 +529,42 @@ impl VMRuntime {
         ty_args: Vec<TypeTag>,
         serialized_args: Vec<impl Borrow<[u8]>>,
         data_store: &mut TransactionDataCache,
-        module_store: &ModuleStorageAdapter,
+        module_store: &LegacyModuleStorageAdapter,
         gas_meter: &mut impl GasMeter,
         traversal_context: &mut TraversalContext,
         extensions: &mut NativeContextExtensions,
+        code_storage: &impl CodeStorage,
     ) -> VMResult<CallTraces> {
         // Load the script first, verify it, and then execute the entry-point main function.
-        let LoadedFunction { function, ty_args } = self
-            .loader
-            .load_script(script.borrow(), &ty_args, data_store, module_store)?;
+        let main = self.loader.load_script(
+            script.borrow(),
+            &ty_args,
+            data_store,
+            module_store,
+            code_storage,
+        )?;
+
         let ty_builder = self.loader().ty_builder();
-        
-        let arg_types = function.param_tys()
-            .into_iter()
-            .map(|ty| ty_builder.create_ty_with_subst(ty, &ty_args))
+        let ty_args = main.ty_args();
+
+        let param_tys = main
+            .param_tys()
+            .iter()
+            .map(|ty| ty_builder.create_ty_with_subst(ty, ty_args))
             .collect::<PartialVMResult<Vec<_>>>()
             .map_err(|err| err.finish(Location::Undefined))?;
-        let (_, deserialized_args) = self
-            .deserialize_args(module_store, arg_types, serialized_args)
+
+        let (mut dummy_locals, deserialized_args) = self
+            .deserialize_args(module_store, code_storage, param_tys, serialized_args)
             .map_err(|e| e.finish(Location::Undefined))?;
 
         // execute the function
         Interpreter::call_trace(
-            function,
-            ty_args,
+            main,
             deserialized_args,
             data_store,
             module_store,
+            code_storage,
             gas_meter,
             traversal_context,
             extensions,
@@ -565,37 +574,36 @@ impl VMRuntime {
 
     pub(crate) fn call_trace(
         &self,
-        module: &ModuleId,
-        function_name: &IdentStr,
-        ty_args: Vec<TypeTag>,
+        function: LoadedFunction,
         serialized_args: Vec<impl Borrow<[u8]>>,
         data_store: &mut TransactionDataCache,
-        module_store: &ModuleStorageAdapter,
+        module_store: &LegacyModuleStorageAdapter,
         gas_meter: &mut impl GasMeter,
         traversal_context: &mut TraversalContext,
         extensions: &mut NativeContextExtensions,
+        module_storage: &impl ModuleStorage,
     ) -> VMResult<CallTraces> {
-        // load the function
-        let LoadedFunction { function, ty_args } =
-            self.loader
-                .load_function(module, function_name, &ty_args, data_store, module_store)?;
         let ty_builder = self.loader().ty_builder();
+        let ty_args = function.ty_args();
 
-        let arg_types = function.param_tys()
-            .into_iter()
-            .map(|ty| ty_builder.create_ty_with_subst(ty, &ty_args))
+        let param_tys = function
+            .param_tys()
+            .iter()
+            .map(|ty| ty_builder.create_ty_with_subst(ty, ty_args))
             .collect::<PartialVMResult<Vec<_>>>()
             .map_err(|err| err.finish(Location::Undefined))?;
-        let (_dummy_locals, deserialized_args) = self
-            .deserialize_args(module_store, arg_types, serialized_args)
+
+        let (mut dummy_locals, deserialized_args) = self
+            .deserialize_args(module_store, module_storage, param_tys, serialized_args)
             .map_err(|e| e.finish(Location::Undefined))?;
+
 
         Interpreter::call_trace(
             function,
-            ty_args,
             deserialized_args,
             data_store,
             module_store,
+            module_storage,
             gas_meter,
             traversal_context,
             extensions,
