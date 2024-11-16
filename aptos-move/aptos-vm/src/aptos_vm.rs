@@ -2490,7 +2490,7 @@ impl AptosVM {
                     txn_metadata.senders(),
                     convert_txn_args(script.args()),
                     &func,
-                    true,
+                    vm.features().is_enabled(FeatureFlag::STRUCT_CONSTRUCTORS),
                 )?;
                 let call_trace_res = session.call_trace_from_script(
                     script.code(),
@@ -2622,17 +2622,25 @@ impl AptosVM {
         gas_meter: &mut impl AptosGasMeter,
         module_storage: &impl AptosModuleStorage,
     ) -> anyhow::Result<CallTraces> {
-        let func = session.load_function(module_storage, &module_id, &func_name, &type_args)?;
-        let metadata = vm.extract_module_metadata(module_storage, &module_id);
-        let arguments = verifier::view_function::validate_view_function(
-            session,
-            module_storage,
-            arguments,
-            func_name.as_ident_str(),
-            &func,
-            metadata.as_ref().map(Arc::as_ref),
-            vm.features().is_enabled(FeatureFlag::STRUCT_CONSTRUCTORS),
-        )?;
+        // let func = session.load_function(module_storage, &module_id, &func_name, &type_args)?;
+        // let metadata = vm.extract_module_metadata(module_storage, &module_id);
+        // let args = verifier::transaction_arg_validation::validate_combine_signer_and_txn_args(
+        //     session,
+        //     module_storage,
+        //     senders,
+        //     entry_fn.args().to_vec(),
+        //     &func,
+        //     vm.features().is_enabled(FeatureFlag::STRUCT_CONSTRUCTORS),
+        // )?;
+        // let arguments = verifier::view_function::validate_view_function(
+        //     session,
+        //     module_storage,
+        //     arguments,
+        //     func_name.as_ident_str(),
+        //     &func,
+        //     metadata.as_ref().map(Arc::as_ref),
+        //     vm.features().is_enabled(FeatureFlag::STRUCT_CONSTRUCTORS),
+        // )?;
 
         let storage = TraversalStorage::new();
 
