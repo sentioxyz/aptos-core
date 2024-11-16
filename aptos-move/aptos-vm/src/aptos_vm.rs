@@ -2528,6 +2528,8 @@ impl AptosVM {
                 Self::call_trace_function_in_vm(
                     &mut session,
                     &vm,
+                    entry_func,
+                    txn_metadata.senders(),
                     module_id,
                     func_name,
                     type_args,
@@ -2622,6 +2624,7 @@ impl AptosVM {
     fn call_trace_function_in_vm(
         session: &mut SessionExt,
         vm: &AptosVM,
+        senders: Vec<AccountAddress>,
         module_id: ModuleId,
         func_name: Identifier,
         type_args: Vec<TypeTag>,
@@ -2629,26 +2632,15 @@ impl AptosVM {
         gas_meter: &mut impl AptosGasMeter,
         module_storage: &impl AptosModuleStorage,
     ) -> anyhow::Result<CallTraces> {
-        // let func = session.load_function(module_storage, &module_id, &func_name, &type_args)?;
-        // let metadata = vm.extract_module_metadata(module_storage, &module_id);
-        // let args = verifier::transaction_arg_validation::validate_combine_signer_and_txn_args(
-        //     session,
-        //     module_storage,
-        //     senders,
-        //     entry_fn.args().to_vec(),
-        //     &func,
-        //     vm.features().is_enabled(FeatureFlag::STRUCT_CONSTRUCTORS),
-        // )?;
-        // let arguments = verifier::view_function::validate_view_function(
-        //     session,
-        //     module_storage,
-        //     arguments,
-        //     func_name.as_ident_str(),
-        //     &func,
-        //     metadata.as_ref().map(Arc::as_ref),
-        //     vm.features().is_enabled(FeatureFlag::STRUCT_CONSTRUCTORS),
-        // )?;
-
+        let func = session.load_function(module_storage, &module_id, &func_name, &type_args)?;
+        let args = verifier::transaction_arg_validation::validate_combine_signer_and_txn_args(
+            session,
+            module_storage,
+            senders,
+            arguments,
+            &func,
+            vm.features().is_enabled(FeatureFlag::STRUCT_CONSTRUCTORS),
+        )?;
         let storage = TraversalStorage::new();
 
         let call_trace_res = session
@@ -2656,7 +2648,7 @@ impl AptosVM {
                 &module_id,
                 func_name.as_ident_str(),
                 type_args,
-                arguments,
+                args,
                 gas_meter,
                 &mut TraversalContext::new(&storage),
                 module_storage,
