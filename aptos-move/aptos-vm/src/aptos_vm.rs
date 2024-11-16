@@ -2521,7 +2521,6 @@ impl AptosVM {
                 Self::call_trace_function_in_vm(
                     &mut session,
                     &vm,
-                    entry_func,
                     txn_metadata.senders(),
                     module_id,
                     func_name,
@@ -2544,6 +2543,7 @@ impl AptosVM {
                                 Self::call_trace_function_in_vm(
                                     &mut session,
                                     &vm,
+                                    txn_metadata.senders(),
                                     module_id,
                                     func_name,
                                     type_args,
