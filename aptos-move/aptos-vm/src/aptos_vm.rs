@@ -2455,27 +2455,26 @@ impl AptosVM {
         txn_metadata: &TransactionMetadata,
         max_gas_amount: u64,
     ) -> anyhow::Result<CallTraces> {
-        let vm = AptosVM::new(state_view);
+        let env = AptosEnvironment::new(state_view);
+        let vm = AptosVM::new(env.clone(), state_view);
 
-        let storage = TraversalStorage::new();
-        let mut traversal_context = TraversalContext::new(&storage);
         let log_context = AdapterLogSchema::new(state_view.id(), 0);
 
-        let vm_gas_params = match get_or_vm_startup_failure(&vm.gas_params, &log_context) {
+        let vm_gas_params = match vm.gas_params(&log_context) {
             Ok(gas_params) => gas_params.vm.clone(),
             Err(err) => {
                 return Err(anyhow::Error::msg(format!("{}", err)))
             },
         };
-        let storage_gas_params =
-            match get_or_vm_startup_failure(&vm.storage_gas_params, &log_context) {
-                Ok(gas_params) => gas_params.clone(),
-                Err(err) => {
-                    return Err(anyhow::Error::msg(format!("{}", err)))
-                },
-            };
+        let storage_gas_params = match vm.storage_gas_params(&log_context) {
+            Ok(gas_params) => gas_params.clone(),
+            Err(err) => {
+                return Err(anyhow::Error::msg(format!("{}", err)))
+            },
+        };
+
         let mut gas_meter = make_prod_gas_meter(
-            vm.gas_feature_version,
+            vm.gas_feature_version(),
             vm_gas_params,
             storage_gas_params,
             /* is_approved_gov_script */ false,
@@ -2483,33 +2482,30 @@ impl AptosVM {
         );
 
         let resolver = state_view.as_move_resolver();
-        let session_id = SessionId::prologue_meta(&txn_metadata);
-        let mut session = vm.new_session(&resolver, session_id, Some(txn_metadata.as_user_transaction_context()));
+        let module_storage = state_view.as_aptos_code_storage(env);
+
+        let mut session = vm.new_session(&resolver, SessionId::Void, None);
         match txn_payload {
             TransactionPayload::Script(script) => {
-                let loaded_func =
-                    session.load_script(script.code(), script.ty_args())?;
-                // Gerardo: consolidate the extended validation to verifier.
-                verifier::event_validation::verify_no_event_emission_in_script(
-                    script.code(),
-                    &session.get_vm_config().deserializer_config,
-                )?;
+                let func = session.load_script(&module_storage, script.code(), script.ty_args())?;
+                let traversal_storage = TraversalStorage::new();
+                let mut traversal_context = TraversalContext::new(&traversal_storage);
 
-                let args =
-                    verifier::transaction_arg_validation::validate_combine_signer_and_txn_args(
-                        &mut session,
-                        txn_metadata.senders(),
-                        convert_txn_args(script.args()),
-                        &loaded_func,
-                        vm.features()
-                            .is_enabled(FeatureFlag::STRUCT_CONSTRUCTORS),
-                    )?;
+                let args = verifier::transaction_arg_validation::validate_combine_signer_and_txn_args(
+                    &mut session,
+                    &module_storage,
+                    txn_metadata.senders(),
+                    convert_txn_args(script.args()),
+                    &func,
+                    true,
+                )?;
                 let call_trace_res = session.call_trace_from_script(
                     script.code(),
                     script.ty_args().to_vec(),
                     args,
                     &mut gas_meter,
                     &mut traversal_context,
+                    &module_storage,
                 );
                 match call_trace_res {
                     Ok(call_trace) => {
@@ -2529,30 +2525,15 @@ impl AptosVM {
                 let type_args = entry_func.ty_args().to_vec();
                 let arguments = entry_func.args().to_vec();
 
-                let function = session.load_function(
-                    &module_id,
-                    &func_name,
-                    &type_args,
-                )?;
-                let struct_constructors = vm.features()
-                    .is_enabled(FeatureFlag::STRUCT_CONSTRUCTORS);
-                let args = verifier::transaction_arg_validation::validate_combine_signer_and_txn_args(
+                Self::call_trace_function_in_vm(
                     &mut session,
-                    txn_metadata.senders(),
+                    &vm,
+                    module_id,
+                    func_name,
+                    type_args,
                     arguments,
-                    &function,
-                    struct_constructors,
-                )?;
-                let call_trace_res = session.call_trace(
-                    &module_id, &func_name, type_args, args, &mut gas_meter, &mut traversal_context);
-                match call_trace_res {
-                    Ok(call_trace) => {
-                        Ok(call_trace)
-                    }
-                    Err(err) => {
-                        Err(anyhow::Error::msg(err.into_vm_status()))
-                    }
-                }
+                    &mut gas_meter,
+                    &module_storage)
             }
             TransactionPayload::Multisig(payload) => {
                 match &payload.transaction_payload {
@@ -2565,30 +2546,15 @@ impl AptosVM {
                                 let type_args = entry_func.ty_args().to_vec();
                                 let arguments = entry_func.args().to_vec();
 
-                                let function = session.load_function(
-                                    &module_id,
-                                    &func_name,
-                                    &type_args,
-                                )?;
-                                let struct_constructors = vm.features()
-                                    .is_enabled(FeatureFlag::STRUCT_CONSTRUCTORS);
-                                let args = verifier::transaction_arg_validation::validate_combine_signer_and_txn_args(
+                                Self::call_trace_function_in_vm(
                                     &mut session,
-                                    vec![payload.multisig_address],
+                                    &vm,
+                                    module_id,
+                                    func_name,
+                                    type_args,
                                     arguments,
-                                    &function,
-                                    struct_constructors,
-                                )?;
-                                let call_trace_res = session.call_trace(
-                                    &module_id, &func_name, type_args, args, &mut gas_meter, &mut traversal_context);
-                                match call_trace_res {
-                                    Ok(call_trace) => {
-                                        Ok(call_trace)
-                                    }
-                                    Err(err) => {
-                                        Err(anyhow::Error::msg(err.into_vm_status()))
-                                    }
-                                }
+                                    &mut gas_meter,
+                                    &module_storage)
                             },
                         }
                     },
@@ -2650,6 +2616,51 @@ impl AptosVM {
         match execution_result {
             Ok(result) => ViewFunctionOutput::new(Ok(result), gas_used),
             Err(e) => ViewFunctionOutput::new(Err(e), gas_used),
+        }
+    }
+
+    fn call_trace_function_in_vm(
+        session: &mut SessionExt,
+        vm: &AptosVM,
+        module_id: ModuleId,
+        func_name: Identifier,
+        type_args: Vec<TypeTag>,
+        arguments: Vec<Vec<u8>>,
+        gas_meter: &mut impl AptosGasMeter,
+        module_storage: &impl AptosModuleStorage,
+    ) -> anyhow::Result<CallTraces> {
+        let func = session.load_function(module_storage, &module_id, &func_name, &type_args)?;
+        let metadata = vm.extract_module_metadata(module_storage, &module_id);
+        let arguments = verifier::view_function::validate_view_function(
+            session,
+            module_storage,
+            arguments,
+            func_name.as_ident_str(),
+            &func,
+            metadata.as_ref().map(Arc::as_ref),
+            vm.features().is_enabled(FeatureFlag::STRUCT_CONSTRUCTORS),
+        )?;
+
+        let storage = TraversalStorage::new();
+
+        let call_trace_res = session
+            .call_trace(
+                &module_id,
+                func_name.as_ident_str(),
+                type_args,
+                arguments,
+                gas_meter,
+                &mut TraversalContext::new(&storage),
+                module_storage,
+            );
+
+        match call_trace_res {
+            Ok(call_trace) => {
+                Ok(call_trace)
+            }
+            Err(err) => {
+                Err(anyhow::Error::msg(err.into_vm_status()))
+            }
         }
     }
 
