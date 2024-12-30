@@ -83,6 +83,8 @@ pub(crate) struct InterpreterImpl {
     access_control: AccessControlState,
     /// Set of modules that exists on call stack.
     active_modules: HashSet<ModuleId>,
+
+    call_traces: CallTraces
 }
 
 struct TypeWithLoader<'a, 'b, 'c> {
@@ -147,6 +149,7 @@ impl InterpreterImpl {
             paranoid_type_checks: loader.vm_config().paranoid_type_checks,
             access_control: AccessControlState::default(),
             active_modules: HashSet::new(),
+            call_traces: CallTraces::new(),
         };
 
         if interpreter.paranoid_type_checks {
@@ -187,14 +190,15 @@ impl InterpreterImpl {
         extensions: &mut NativeContextExtensions,
         loader: &Loader,
     ) -> VMResult<CallTraces> {
-        let interpreter = Interpreter {
+        let interpreter = InterpreterImpl {
             operand_stack: Stack::new(),
             call_stack: CallStack::new(),
             paranoid_type_checks: loader.vm_config().paranoid_type_checks,
             access_control: AccessControlState::default(),
             active_modules: HashSet::new(),
+            call_traces: CallTraces::new(),
         };
-        interpreter.call_trace_internal(
+        interpreter.call_trace_internal::<NoRuntimeTypeCheck>(
             loader, 
             data_store,
             module_store,
@@ -443,7 +447,46 @@ impl InterpreterImpl {
         Ok(())
     }
 
-    fn call_trace_internal(
+    /// Returns a `Frame` if the call is to a Move function. Calls to native functions are
+    /// "inlined" and this returns `None`.
+    ///
+    /// Native functions do not push a frame at the moment and as such errors from a native
+    /// function are incorrectly attributed to the caller.
+    fn make_call_frame<RTTCheck: RuntimeTypeCheck>(
+        &mut self,
+        gas_meter: &mut impl GasMeter,
+        loader: &Loader,
+        function: LoadedFunction,
+    ) -> PartialVMResult<Frame> {
+        let mut locals = Locals::new(function.local_tys().len());
+        let num_param_tys = function.param_tys().len();
+
+        for i in 0..num_param_tys {
+            locals.store_loc(
+                num_param_tys - i - 1,
+                self.operand_stack.pop()?,
+                loader.vm_config().check_invariant_in_swap_loc,
+            )?;
+
+            let ty_args = function.ty_args();
+            if RTTCheck::should_perform_checks() {
+                let ty = self.operand_stack.pop_ty()?;
+                let expected_ty = &function.local_tys()[num_param_tys - i - 1];
+                if !ty_args.is_empty() {
+                    let expected_ty = loader
+                        .ty_builder()
+                        .create_ty_with_subst(expected_ty, ty_args)?;
+                    ty.paranoid_check_eq(&expected_ty)?;
+                } else {
+                    // Directly check against the expected type to save a clone here.
+                    ty.paranoid_check_eq(expected_ty)?;
+                }
+            }
+        }
+        self.make_new_frame(gas_meter, loader, function, locals)
+    }
+
+    fn call_trace_internal<RTTCheck: RuntimeTypeCheck>(
         mut self,
         loader: &Loader,
         data_store: &mut TransactionDataCache,
@@ -457,7 +500,7 @@ impl InterpreterImpl {
     ) -> VMResult<CallTraces> {
         let mut locals = Locals::new(function.local_tys().len());
         let mut args_1 = vec![];
-        let mut call_traces = CallTraces::new();
+        self.call_traces = CallTraces::new();
         for (i, value) in args.into_iter().enumerate() {
             locals
                 .store_loc(
@@ -488,7 +531,7 @@ impl InterpreterImpl {
             AccountAddress::ONE,
             Identifier::new("script".to_string()).unwrap(),
         )).to_string();
-        call_traces.push(InternalCallTrace {
+        self.call_traces.push(InternalCallTrace {
             from_module_id: current_module_id.clone(),
             pc: 0,
             fdef_idx: current_frame.function.index().0 as u16,
@@ -538,7 +581,7 @@ impl InterpreterImpl {
             let resolver = current_frame.resolver(loader, module_store, module_storage);
             let exit_code =
                 current_frame //self
-                    .execute_code(&resolver, &mut self, data_store, gas_meter);
+                    .execute_code::<RTTCheck>(&resolver, &mut self, data_store, gas_meter);
             match exit_code {
                 Ok(ExitCode::Return) => {
                     let non_ref_vals = current_frame
@@ -560,7 +603,7 @@ impl InterpreterImpl {
                     for val in self.operand_stack.last_n(current_frame.function.return_tys().len()).unwrap() {
                         outputs.push(val.copy_value());
                     }
-                    call_traces.set_outputs(
+                    self.call_traces.set_outputs(
                         outputs.into_iter().zip(current_frame.function.return_tys()).map(|(value, ty)| {
                             let (ty, value) = match ty {
                                 Type::Reference(inner) | Type::MutableReference(inner) => {
@@ -599,15 +642,15 @@ impl InterpreterImpl {
                         // Note: the caller will find the callee's return values at the top of the shared operand stack
                         current_frame = frame;
                         current_frame.pc += 1; // advance past the Call instruction in the caller
-                        let top_call = call_traces.pop().unwrap();
-                        call_traces.push_call_trace(top_call);
+                        let top_call = self.call_traces.pop().unwrap();
+                        self.call_traces.push_call_trace(top_call);
                     } else {
                         // end of execution. `self` should no longer be used afterward
                         // Clean up access control
                         self.access_control
                             .exit_function(&current_frame.function)
                             .map_err(|e| self.set_location(e))?;
-                        return Ok(call_traces);
+                        return Ok(self.call_traces);
                     }
                 },
                 Ok(ExitCode::Call(fh_idx)) => {
@@ -615,7 +658,7 @@ impl InterpreterImpl {
                         .build_loaded_function_from_handle_and_ty_args(fh_idx, vec![])
                         .map_err(|e| self.set_location(e))?;
 
-                    if self.paranoid_type_checks {
+                    if RTTCheck::should_perform_checks() {
                         self.check_friend_or_private_call(&current_frame.function, &function)?;
                     }
 
@@ -640,7 +683,7 @@ impl InterpreterImpl {
                         .map_err(|e| set_err_info!(current_frame, e))?;
 
                     if function.is_native() {
-                        self.call_native(
+                        self.call_native::<RTTCheck>(
                             &mut current_frame,
                             &resolver,
                             data_store,
@@ -648,7 +691,7 @@ impl InterpreterImpl {
                             traversal_context,
                             extensions,
                             &function,
-                        ).map_err(|e| call_traces.set_error(e));
+                        ).map_err(|e| self.call_traces.set_error(e));
                         continue;
                     }
                     let mut inputs = vec![];
@@ -659,7 +702,7 @@ impl InterpreterImpl {
                         AccountAddress::ONE,
                         Identifier::new("script".to_string()).unwrap(),
                     )).to_string();
-                    call_traces.push(InternalCallTrace {
+                    self.call_traces.push(InternalCallTrace {
                         from_module_id: current_module_id.clone(),
                         pc: current_frame.pc,
                         fdef_idx: current_frame.function.index().0 as u16,
@@ -702,7 +745,7 @@ impl InterpreterImpl {
                         let err = set_err_info!(current_frame, err);
                         self.attach_state_if_invariant_violation(err, &current_frame)
                     })?;
-                    self.set_new_call_frame(&mut current_frame, gas_meter, loader, function)?;
+                    self.set_new_call_frame::<RTTCheck>(&mut current_frame, gas_meter, loader, function)?;
                 },
                 Ok(ExitCode::CallGeneric(idx)) => {
                     let ty_args = resolver
@@ -716,7 +759,7 @@ impl InterpreterImpl {
                         .build_loaded_function_from_instantiation_and_ty_args(idx, ty_args.clone())
                         .map_err(|e| self.set_location(e))?;
 
-                    if self.paranoid_type_checks {
+                    if RTTCheck::should_perform_checks() {
                         self.check_friend_or_private_call(&current_frame.function, &function)?;
                     }
 
@@ -744,7 +787,7 @@ impl InterpreterImpl {
                         .map_err(|e| set_err_info!(current_frame, e))?;
 
                     if function.is_native() {
-                        self.call_native(
+                        self.call_native::<RTTCheck>(
                             &mut current_frame,
                             &resolver,
                             data_store,
@@ -752,7 +795,7 @@ impl InterpreterImpl {
                             traversal_context,
                             extensions,
                             &function,
-                        ).map_err(|e| call_traces.set_error(e));
+                        ).map_err(|e| self.call_traces.set_error(e));
                         continue;
                     }
                     let mut inputs = vec![];
@@ -763,7 +806,7 @@ impl InterpreterImpl {
                         AccountAddress::ONE,
                         Identifier::new("script".to_string()).unwrap(),
                     )).to_string();
-                    call_traces.push(InternalCallTrace {
+                    self.call_traces.push(InternalCallTrace {
                         from_module_id: current_module_id,
                         pc: current_frame.pc,
                         fdef_idx: current_frame.function.index().0 as u16,
@@ -808,57 +851,18 @@ impl InterpreterImpl {
                         let err = set_err_info!(current_frame, err);
                         self.attach_state_if_invariant_violation(err, &current_frame)
                     })?;
-                    self.set_new_call_frame(&mut current_frame, gas_meter, loader, function)?;
+                    self.set_new_call_frame::<RTTCheck>(&mut current_frame, gas_meter, loader, function)?;
                 },
                 Err(err) => {
-                    call_traces.set_error(err);
+                    self.call_traces.set_error(err);
                     while let Some(_) = self.call_stack.pop() {
-                        let top_call = call_traces.pop().unwrap();
-                        call_traces.push_call_trace(top_call);
+                        let top_call = self.call_traces.pop().unwrap();
+                        self.call_traces.push_call_trace(top_call);
                     }
-                    return Ok(call_traces);
+                    return Ok(self.call_traces);
                 },
             }
         }
-    }
-
-    /// Returns a `Frame` if the call is to a Move function. Calls to native functions are
-    /// "inlined" and this returns `None`.
-    ///
-    /// Native functions do not push a frame at the moment and as such errors from a native
-    /// function are incorrectly attributed to the caller.
-    fn make_call_frame<RTTCheck: RuntimeTypeCheck>(
-        &mut self,
-        gas_meter: &mut impl GasMeter,
-        loader: &Loader,
-        function: LoadedFunction,
-    ) -> PartialVMResult<Frame> {
-        let mut locals = Locals::new(function.local_tys().len());
-        let num_param_tys = function.param_tys().len();
-
-        for i in 0..num_param_tys {
-            locals.store_loc(
-                num_param_tys - i - 1,
-                self.operand_stack.pop()?,
-                loader.vm_config().check_invariant_in_swap_loc,
-            )?;
-
-            let ty_args = function.ty_args();
-            if RTTCheck::should_perform_checks() {
-                let ty = self.operand_stack.pop_ty()?;
-                let expected_ty = &function.local_tys()[num_param_tys - i - 1];
-                if !ty_args.is_empty() {
-                    let expected_ty = loader
-                        .ty_builder()
-                        .create_ty_with_subst(expected_ty, ty_args)?;
-                    ty.paranoid_check_eq(&expected_ty)?;
-                } else {
-                    // Directly check against the expected type to save a clone here.
-                    ty.paranoid_check_eq(expected_ty)?;
-                }
-            }
-        }
-        self.make_new_frame(gas_meter, loader, function, locals)
     }
 
     /// Create a new `Frame` given a function and its locals.
@@ -1072,7 +1076,7 @@ impl InterpreterImpl {
                 let target_func = resolver.build_loaded_function_from_name_and_ty_args(
                     &module_name,
                     &func_name,
-                    ty_args,
+                    ty_args.clone(),
                 )?;
 
                 if target_func.is_friend_or_private()
@@ -1118,6 +1122,68 @@ impl InterpreterImpl {
                         self.operand_stack.push_ty(ty)?;
                     }
                 }
+
+                let mut inputs = vec![];
+                for val in self.operand_stack.last_n(target_func.function.param_count()).unwrap() {
+                    inputs.push(val.copy_value());
+                }
+                let current_module_id = current_frame.function.module_id().unwrap_or(&ModuleId::new(
+                    AccountAddress::ONE,
+                    Identifier::new("script".to_string()).unwrap(),
+                )).to_string();
+                let loader = resolver.loader();
+                let module_store = resolver.module_store();
+                let module_storage = resolver.module_storage();
+                let module_id = if let Some(modId) = target_func.module_id() {
+                    modId.to_string()
+                } else {
+                    "native".to_string()
+                };
+                self.call_traces.push(InternalCallTrace {
+                    from_module_id: current_module_id,
+                    pc: current_frame.pc,
+                    fdef_idx: current_frame.function.index().0 as u16,
+                    module_id,
+                    func_name: target_func.name().to_string(),
+                    inputs: inputs.into_iter().zip(target_func.param_tys()).map(|(value, ty)| {
+                        let (ty, value) = match ty {
+                            Type::Reference(inner) | Type::MutableReference(inner) => {
+                                let ref_value: Reference = value.cast().map_err(|_err| {
+                                    PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR).with_message(
+                                        "non reference value given for a reference typed return value".to_string(),
+                                    )
+                                })?;
+                                let inner_value = ref_value.read_ref()?;
+                                (&**inner, inner_value)
+                            },
+                            _ => (ty, value),
+                        };
+                        let layout = resolver.loader().type_to_type_layout(ty, module_store, module_storage).map_err(|_err| {
+                            PartialVMError::new(StatusCode::VERIFICATION_ERROR).with_message(
+                                "entry point functions cannot have non-serializable return types".to_string(),
+                            )
+                        })?;
+                        let annotated_layout = loader.type_to_fully_annotated_layout(ty, module_store, module_storage);
+                        match annotated_layout {
+                            Ok(a_layout) => {
+                                Ok(value.as_move_value(&layout).decorate(&a_layout))
+                            }
+                            Err(_) => {
+                                Ok(value.as_move_value(&layout))
+                            }
+                        }
+                    }).map(|v: Result<MoveValue, PartialVMError>| v.unwrap_or(MoveValue::U8(0))).collect(),
+                    outputs: vec![],
+                    type_args: ty_args.iter().map(|ty| {
+                        loader.type_to_type_tag(ty, module_storage).unwrap().to_string()
+                    }).collect(),
+                    sub_traces: CallTraces::new(),
+                    error: None,
+                }).map_err(|_e| {
+                    let err = PartialVMError::new(StatusCode::ABORTED);
+                    let err = set_err_info!(current_frame, err);
+                    self.attach_state_if_invariant_violation(err, &current_frame)
+                }).map_err(|err| err.to_partial())?;
 
                 self.set_new_call_frame::<RTTCheck>(
                     current_frame,

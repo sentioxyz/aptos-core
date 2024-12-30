@@ -8,7 +8,7 @@ use aptos_types::{
     account_address::AccountAddress,
     state_store::{
         state_key::StateKey, state_storage_usage::StateStorageUsage, state_value::StateValue,
-        Result as StateViewResult, StateViewId, TStateView,
+        StateViewResult, StateViewId, TStateView,
     },
     transaction::{Transaction, TransactionInfo, Version},
 };

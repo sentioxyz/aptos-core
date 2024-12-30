@@ -35,6 +35,7 @@ use move_vm_types::{
 };
 use std::{borrow::Borrow, collections::BTreeSet, sync::Arc};
 use move_binary_format::call_trace::CallTraces;
+use crate::interpreter::InterpreterImpl;
 
 /// An instantiation of the MoveVM.
 pub(crate) struct VMRuntime {
@@ -559,7 +560,7 @@ impl VMRuntime {
             .map_err(|e| e.finish(Location::Undefined))?;
 
         // execute the function
-        Interpreter::call_trace(
+        InterpreterImpl::call_trace(
             main,
             deserialized_args,
             data_store,
@@ -598,7 +599,7 @@ impl VMRuntime {
             .map_err(|e| e.finish(Location::Undefined))?;
 
 
-        Interpreter::call_trace(
+        InterpreterImpl::call_trace(
             function,
             deserialized_args,
             data_store,
