@@ -11,7 +11,7 @@ mod sync_rest_interface;
 pub use server::run_debugger_server;
 pub use config::DebuggerServerConfig;
 
-use anyhow::{format_err, Result};
+use anyhow::{anyhow, format_err, Result};
 use aptos_rest_client::{Client};
 use aptos_types::{
     transaction::{
@@ -230,6 +230,9 @@ impl SyncAptosTracer {
                 ).map_err(|err| {
                     format_err!("Error getting call trace for txn_hash - {:?} : {:?}", txn_data.info.to_string(), err)
                 })?;
+                if call_trace.0.len() != 1 {
+                    Err(anyhow!("Call trace length is not 1: {:?}", call_trace.0.len()))?;
+                }
 
                 // get all the package names from accounts in call_trace
                 let mut package_names = HashMap::new();

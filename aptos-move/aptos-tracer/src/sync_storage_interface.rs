@@ -19,7 +19,6 @@ use aptos_logger::error;
 use aptos_rest_client::aptos_api_types::{ResourceGroup, TransactionOnChainData};
 use aptos_types::access_path::AccessPath;
 use aptos_vm::move_vm_ext::AptosMoveResolver;
-use aptos_utils::aptos_try;
 use aptos_vm::data_cache::AsMoveResolver;
 
 use move_core_types::language_storage::{ModuleId, StructTag};
