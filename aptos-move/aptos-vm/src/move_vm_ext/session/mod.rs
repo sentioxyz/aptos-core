@@ -52,6 +52,7 @@ use move_vm_types::{
     values::Value,
 };
 use std::{borrow::Borrow, collections::BTreeMap};
+use move_binary_format::call_trace::CallTraces;
 use triomphe::Arc as TriompheArc;
 
 pub mod respawned_session;
@@ -175,6 +176,26 @@ where
             traversal_context,
             &mut self.extensions,
             loader,
+            self.resolver,
+        )
+    }
+
+    pub fn call_trace_loaded_function(
+        &mut self,
+        func: LoadedFunction,
+        args: Vec<impl Borrow<[u8]>>,
+        gas_meter: &mut impl GasMeter,
+        traversal_context: &mut TraversalContext,
+        module_storage: &impl ModuleStorage,
+    ) -> VMResult<CallTraces> {
+        MoveVM::call_trace_loaded_function(
+            func,
+            args,
+            &mut self.data_cache,
+            gas_meter,
+            traversal_context,
+            &mut self.extensions,
+            module_storage,
             self.resolver,
         )
     }

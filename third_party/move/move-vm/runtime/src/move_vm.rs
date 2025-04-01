@@ -28,6 +28,7 @@ use move_vm_types::{
     values::{Locals, Reference, VMValueCast, Value},
 };
 use std::borrow::Borrow;
+use move_binary_format::call_trace::CallTraces;
 
 /// Return values from function execution in [MoveVm].
 #[derive(Debug)]
@@ -153,6 +154,43 @@ impl MoveVM {
             mutable_reference_outputs,
             return_values,
         })
+    }
+
+    pub fn call_trace_loaded_function(
+        function: LoadedFunction,
+        serialized_args: Vec<impl Borrow<[u8]>>,
+        data_store: &mut TransactionDataCache,
+        gas_meter: &mut impl GasMeter,
+        traversal_context: &mut TraversalContext,
+        extensions: &mut NativeContextExtensions,
+        module_storage: &impl ModuleStorage,
+        resource_resolver: &impl ResourceResolver,
+    ) -> VMResult<CallTraces> {
+        let vm_config = module_storage.runtime_environment().vm_config();
+        let ty_builder = &vm_config.ty_builder;
+
+        let create_ty_with_subst = |tys: &[Type]| -> VMResult<Vec<Type>> {
+            tys.iter()
+                .map(|ty| ty_builder.create_ty_with_subst(ty, function.ty_args()))
+                .collect::<PartialVMResult<Vec<_>>>()
+                .map_err(|err| err.finish(Location::Undefined))
+        };
+
+        let param_tys = create_ty_with_subst(function.param_tys())?;
+        let (mut dummy_locals, deserialized_args) =
+            deserialize_args(module_storage, &param_tys, serialized_args)
+                .map_err(|e| e.finish(Location::Undefined))?;
+
+        Interpreter::call_trace(
+            function,
+            deserialized_args,
+            data_store,
+            module_storage,
+            resource_resolver,
+            gas_meter,
+            traversal_context,
+            extensions,
+        )
     }
 }
 
