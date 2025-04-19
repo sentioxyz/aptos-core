@@ -359,6 +359,7 @@ pub struct CallTraceWithSource {
     pub return_value: Vec<Value>,
     pub type_args: Vec<String>,
     pub calls: Vec<CallTraceWithSource>,
+    pub gas_used: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub location: Option<Location>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -384,6 +385,7 @@ impl CallTraceWithSource {
             return_value: vec![],
             type_args: vec![],
             calls: vec![],
+            gas_used: 0,
             location: None,
             error: None,
         }
@@ -408,6 +410,7 @@ impl CallTraceWithSource {
             calls: call_trace.sub_traces.clone().0.into_iter().map(|sub_trace| {
                 CallTraceWithSource::from(sub_trace, package_registries)
             }).collect(),
+            gas_used: call_trace.gas_info.gas_used(),
             location: None,
             error: {
                 if let Some(vm_error) = call_trace.error {
@@ -472,6 +475,7 @@ impl CallTraceWithSource {
             calls: call_trace.sub_traces.clone().0.into_iter().map(|sub_trace| {
                 CallTraceWithSource::from_modules(sub_trace, modules_map)
             }).collect(),
+            gas_used: call_trace.gas_info.gas_used(),
             location: None,
             error: None,
         };
