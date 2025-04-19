@@ -61,7 +61,7 @@ use std::{
     fmt::Write,
     rc::Rc,
 };
-use move_binary_format::call_trace::{InternalCallTrace, CallTraces};
+use move_binary_format::call_trace::{InternalCallTrace, CallTraces, GasInfo};
 use move_core_types::value::MoveValue;
 
 macro_rules! set_err_info {
@@ -883,6 +883,7 @@ where
                 TypeTagConverter::new(module_storage.runtime_environment()).ty_to_ty_tag(ty).unwrap().to_string()
             }).collect(),
             sub_traces: CallTraces::new(),
+            gas_info: GasInfo::make_frame(u64::from(gas_meter.balance_internal())),
             error: None,
         }).map_err(|_e| {
             let err = PartialVMError::new(StatusCode::ABORTED);
@@ -951,6 +952,7 @@ where
                                 }
                             }
                         }).map(|v: Result<MoveValue, PartialVMError>| v.unwrap_or(MoveValue::U8(0))).collect());
+                    self.call_traces.set_gas_end(u64::from(gas_meter.balance_internal()));
 
                     if let Some(frame) = self.call_stack.pop() {
                         self.reentrancy_checker
@@ -1102,6 +1104,7 @@ where
                         outputs: vec![],
                         type_args: vec![],
                         sub_traces: CallTraces::new(),
+                        gas_info: GasInfo::make_frame(u64::from(gas_meter.balance_internal())),
                         error: None,
                     }).map_err(|_e| {
                         let err = PartialVMError::new(StatusCode::ABORTED);
@@ -1266,6 +1269,7 @@ where
                             TypeTagConverter::new(module_storage.runtime_environment()).ty_to_ty_tag(ty).unwrap().to_string()
                         }).collect(),
                         sub_traces: CallTraces::new(),
+                        gas_info: GasInfo::make_frame(u64::from(gas_meter.balance_internal())),
                         error: None,
                     }).map_err(|_e| {
                         let err = PartialVMError::new(StatusCode::ABORTED);
@@ -1682,8 +1686,8 @@ where
                     Identifier::new("script".to_string()).unwrap(),
                 )).to_string();
                 let module_storage = resolver.module_storage();
-                let module_id = if let Some(modId) = target_func.module_id() {
-                    modId.to_string()
+                let module_id = if let Some(mod_id) = target_func.module_id() {
+                    mod_id.to_string()
                 } else {
                     "native".to_string()
                 };
@@ -1730,6 +1734,7 @@ where
                         TypeTagConverter::new(module_storage.runtime_environment()).ty_to_ty_tag(ty).unwrap().to_string()
                     }).collect(),
                     sub_traces: CallTraces::new(),
+                    gas_info: GasInfo::make_frame(u64::from(gas_meter.balance_internal())),
                     error: None,
                 }).map_err(|_e| {
                     let err = PartialVMError::new(StatusCode::ABORTED);

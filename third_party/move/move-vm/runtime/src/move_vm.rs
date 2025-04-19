@@ -175,7 +175,7 @@ impl MoveVM {
         };
 
         let param_tys = create_ty_with_subst(function.param_tys())?;
-        let (mut dummy_locals, deserialized_args) =
+        let (_, deserialized_args) =
             deserialize_args(module_storage, &param_tys, serialized_args)
                 .map_err(|e| e.finish(Location::Undefined))?;
 

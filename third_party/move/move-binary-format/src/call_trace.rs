@@ -18,7 +18,31 @@ pub struct InternalCallTrace {
     pub type_args: Vec<String>,
     pub sub_traces: CallTraces,
     pub fdef_idx: u16,
+    pub gas_info: GasInfo,
     pub error: Option<VMError>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct GasInfo {
+    start_balance: u64,
+    end_balance: u64,
+}
+
+impl GasInfo {
+    pub fn make_frame(start_balance: u64) -> Self {
+        Self {
+            start_balance,
+            end_balance: 0,
+        }
+    }
+
+    pub fn close_frame(&mut self, end_balance: u64) {
+        self.end_balance = end_balance;
+    }
+
+    pub fn gas_used(&self) -> u64 {
+        self.start_balance - self.end_balance
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -65,5 +89,18 @@ impl CallTraces {
 
     pub fn root(&mut self) -> Option<InternalCallTrace> {
         self.0.pop()
+    }
+
+    pub fn set_gas_end(&mut self, balance: u64) {
+        let length = self.0.len();
+        self.0[length - 1].gas_info.close_frame(balance);
+    }
+
+    pub fn set_root_gas(&mut self, start_balance: u64, end_balance: u64) {
+        let length = self.0.len();
+        self.0[length - 1].gas_info = GasInfo {
+            start_balance,
+            end_balance,
+        };
     }
 }
