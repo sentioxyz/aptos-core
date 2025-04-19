@@ -137,7 +137,7 @@ use std::{
     marker::Sync,
     sync::Arc,
 };
-use move_binary_format::call_trace::CallTraces;
+use move_binary_format::call_trace::{CallTraces, GasInfo};
 
 static EXECUTION_CONCURRENCY_LEVEL: OnceCell<usize> = OnceCell::new();
 static NUM_EXECUTION_SHARD: OnceCell<usize> = OnceCell::new();
@@ -2279,22 +2279,44 @@ impl AptosVM {
 
         let mut gas_meter = make_prod_gas_meter(
             vm.gas_feature_version(),
-            vm_gas_params,
-            storage_gas_params,
+            vm_gas_params.clone(),
+            storage_gas_params.clone(),
             /* is_approved_gov_script */ false,
             max_gas_amount.into(),
             &NoopBlockSynchronizationKillSwitch {},
         );
 
+        gas_meter.charge_intrinsic_gas_for_transaction(txn_metadata.transaction_size())?;
+        if txn_metadata.is_keyless() {
+            gas_meter.charge_keyless()?;
+        }
+
         let resolver = state_view.as_move_resolver();
         let module_storage = state_view.as_aptos_code_storage(&env);
 
         let mut session = vm.new_session(&resolver, SessionId::Void, None);
-        match txn_payload {
+        let mut ret = match txn_payload {
             TransactionPayload::Script(script) => {
                 let func = module_storage.load_script(script.code(), script.ty_args())?;
                 let traversal_storage = TraversalStorage::new();
                 let mut traversal_context = TraversalContext::new(&traversal_storage);
+
+                if vm.gas_feature_version() >= RELEASE_V1_10 {
+                    check_script_dependencies_and_check_gas(
+                        &module_storage,
+                        &mut gas_meter,
+                        &mut traversal_context,
+                        script.code(),
+                    )?;
+                }
+                if vm.gas_feature_version() >= RELEASE_V1_27 {
+                    check_type_tag_dependencies_and_charge_gas(
+                        &module_storage,
+                        &mut gas_meter,
+                        &mut traversal_context,
+                        script.ty_args(),
+                    )?;
+                }
 
                 // Create SerializedSigners from txn_metadata.senders()
                 let senders_serialized: Vec<Vec<u8>> = txn_metadata
@@ -2341,6 +2363,26 @@ impl AptosVM {
                 let arguments = entry_func.args().to_vec();
 
                 let func = module_storage.load_function(&module_id, &func_name, &type_args)?;
+                let traversal_storage = TraversalStorage::new();
+                let mut traversal_context = TraversalContext::new(&traversal_storage);
+
+                if vm.gas_feature_version() >= RELEASE_V1_10 {
+                    let module_id = traversal_context
+                        .referenced_module_ids
+                        .alloc(entry_func.module().clone());
+                    check_dependencies_and_charge_gas(&module_storage, &mut gas_meter, &mut traversal_context, [(
+                        module_id.address(),
+                        module_id.name(),
+                    )])?;
+                }
+                if vm.gas_feature_version() >= RELEASE_V1_27 {
+                    check_type_tag_dependencies_and_charge_gas(
+                        &module_storage,
+                        &mut gas_meter,
+                        &mut traversal_context,
+                        entry_func.ty_args(),
+                    )?;
+                }
 
                 // Create SerializedSigners from senders
                 let senders_serialized: Vec<Vec<u8>> = txn_metadata.senders()
@@ -2357,14 +2399,13 @@ impl AptosVM {
                     &func,
                     vm.features().is_enabled(FeatureFlag::STRUCT_CONSTRUCTORS),
                 )?;
-                let storage = TraversalStorage::new();
 
                 let call_trace_res = session
                     .call_trace_loaded_function(
                         func,
                         args,
                         &mut gas_meter,
-                        &mut TraversalContext::new(&storage),
+                        &mut traversal_context,
                         &module_storage,
                     );
 
@@ -2383,6 +2424,25 @@ impl AptosVM {
 
                 let unreachable_error = VMStatus::error(StatusCode::UNREACHABLE, None);
                 let provided_payload = if let Some(payload) = &payload.transaction_payload {
+                    if let MultisigTransactionPayload::EntryFunction(entry_func) = payload {
+                        if vm.gas_feature_version() >= RELEASE_V1_10 {
+                            let module_id = traversal_context
+                                .referenced_module_ids
+                                .alloc(entry_func.module().clone());
+                            check_dependencies_and_charge_gas(&module_storage, &mut gas_meter, &mut traversal_context, [(
+                                module_id.address(),
+                                module_id.name(),
+                            )])?;
+                        }
+                        if vm.gas_feature_version() >= RELEASE_V1_27 {
+                            check_type_tag_dependencies_and_charge_gas(
+                                &module_storage,
+                                &mut gas_meter,
+                                &mut traversal_context,
+                                entry_func.ty_args(),
+                            )?;
+                        }
+                    }
                     bcs::to_bytes(&payload).map_err(|_| unreachable_error.clone())?
                 } else {
                     bcs::to_bytes::<Vec<u8>>(&vec![]).map_err(|_| unreachable_error)?
@@ -2401,7 +2461,7 @@ impl AptosVM {
                         MoveValue::Address(payload.multisig_address),
                         MoveValue::vector_u8(provided_payload),
                     ]),
-                    &mut UnmeteredGasMeter,
+                    &mut gas_meter,
                     &mut traversal_context,
                     &module_storage,
                 );
@@ -2414,7 +2474,35 @@ impl AptosVM {
                     }
                 }
             }
-        }
+        };
+
+        let change_set_configs = storage_gas_params.change_set_configs;
+        let maybe_publish_request = session.extract_publish_request();
+        let _ = if maybe_publish_request.is_none() {
+            let change_set = session.finish(&change_set_configs, &module_storage)?;
+            let mut user_session_change_set = UserSessionChangeSet::new(
+                change_set,
+                ModuleWriteSet::empty(),
+                &change_set_configs,
+            )?;
+            vm.charge_change_set(
+                &mut user_session_change_set,
+                &mut gas_meter,
+                txn_metadata,
+                &resolver,
+                &module_storage,
+            )
+        } else {
+            unimplemented!()
+        }?;
+
+        if let Ok(ref mut call_traces) = ret {
+            call_traces.set_root_gas(
+                u64::from(txn_metadata.max_gas_amount.to_unit_with_params(&vm_gas_params.txn)),
+                u64::from(gas_meter.balance_internal())
+            );
+        };
+        ret
     }
 
     pub fn execute_view_function(
