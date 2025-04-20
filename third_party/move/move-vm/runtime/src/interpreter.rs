@@ -819,14 +819,14 @@ where
         let frame_cache = FrameTypeCache::make_rc();
         let function = Rc::new(function);
 
-        let mut current_frame = self
-            .make_new_frame(
-                gas_meter,
-                function.clone(),
-                CallType::Regular,
-                locals,
-                frame_cache.clone(),
-            )
+        let mut current_frame = Frame::make_new_frame::<RTTCheck>(
+            gas_meter,
+            CallType::Regular,
+            self.vm_config,
+            function,
+            locals,
+            frame_cache,
+        )
             .map_err(|err| self.set_location(err))?;
 
         // Access control for the new frame.
@@ -892,9 +892,14 @@ where
         })?;
 
         loop {
-            let resolver = current_frame.resolver(module_storage, resource_resolver);
             let exit_code = current_frame
-                .execute_code::<RTTCheck, RTCaches>(&resolver, &mut self, data_store, gas_meter)
+                .execute_code::<RTTCheck, RTCaches>(
+                    &mut self,
+                    data_store,
+                    resource_resolver,
+                    module_storage,
+                    gas_meter,
+                )
                 .map_err(|err| self.attach_state_if_invariant_violation(err, &current_frame));
             match exit_code {
                 Ok(ExitCode::Return) => {
@@ -959,7 +964,7 @@ where
                             .exit_function(
                                 frame.function.module_or_script_id(),
                                 &current_frame.function,
-                                current_frame.call_type,
+                                current_frame.call_type(),
                             )
                             .map_err(|e| self.set_location(e))?;
                         // Note: the caller will find the callee's return values at the top of the shared operand stack
@@ -993,7 +998,7 @@ where
                                 },
                                 btree_map::Entry::Vacant(entry) => {
                                     let function = Rc::new(self.load_function(
-                                        &resolver,
+                                        module_storage,
                                         &current_frame,
                                         fh_idx,
                                     )?);
@@ -1013,7 +1018,7 @@ where
                         }
                     } else {
                         let function = Rc::<LoadedFunction>::new(self.load_function(
-                            &resolver,
+                            module_storage,
                             &current_frame,
                             fh_idx,
                         )?);
@@ -1042,8 +1047,9 @@ where
                     if function.is_native() {
                         let _ = self.call_native::<RTTCheck, RTCaches>(
                             &mut current_frame,
-                            &resolver,
                             data_store,
+                            resource_resolver,
+                            module_storage,
                             gas_meter,
                             traversal_context,
                             extensions,
@@ -1146,7 +1152,7 @@ where
                                 btree_map::Entry::Vacant(entry) => {
                                     let function =
                                         Rc::<LoadedFunction>::new(self.load_generic_function(
-                                            &resolver,
+                                            module_storage,
                                             &current_frame,
                                             gas_meter,
                                             idx,
@@ -1166,12 +1172,13 @@ where
                             }
                         }
                     } else {
-                        let function = Rc::<LoadedFunction>::new(self.load_generic_function(
-                            &resolver,
-                            &current_frame,
-                            gas_meter,
-                            idx,
-                        )?);
+                        let function =
+                            Rc::<LoadedFunction>::new(self.load_generic_function(
+                                module_storage,
+                                &current_frame,
+                                gas_meter,
+                                idx,
+                            )?);
                         let frame_cache = FrameTypeCache::make_rc();
                         (function, frame_cache)
                     };
@@ -1189,10 +1196,13 @@ where
                         .charge_call_generic(
                             module_id,
                             function.name(),
-                            function.ty_args().iter().map(|ty| TypeWithLoader {
-                                ty,
-                                resolver: &resolver,
-                            }),
+                            function
+                                .ty_args()
+                                .iter()
+                                .map(|ty| TypeWithRuntimeEnvironment {
+                                    ty,
+                                    runtime_environment: module_storage.runtime_environment(),
+                                }),
                             self.operand_stack
                                 .last_n(function.param_tys().len())
                                 .map_err(|e| set_err_info!(current_frame, e))?,
@@ -1203,8 +1213,9 @@ where
                     if function.is_native() {
                         let _ = self.call_native::<RTTCheck, RTCaches>(
                             &mut current_frame,
-                            &resolver,
                             data_store,
+                            resource_resolver,
+                            module_storage,
                             gas_meter,
                             traversal_context,
                             extensions,
@@ -1318,7 +1329,7 @@ where
                                 .referenced_module_ids
                                 .alloc(module_id.clone());
                             check_dependencies_and_charge_gas(
-                                resolver.module_storage(),
+                                module_storage,
                                 gas_meter,
                                 traversal_context,
                                 [(arena_id.address(), arena_id.name())],
@@ -1370,22 +1381,29 @@ where
                     if callee.is_native() {
                         let _ = self.call_native::<RTTCheck, RTCaches>(
                             &mut current_frame,
-                            &resolver,
                             data_store,
+                            resource_resolver,
+                            module_storage,
                             gas_meter,
                             traversal_context,
                             extensions,
                             &callee,
-                            mask,
-                            captured_vec,
+                            ClosureMask::empty(),
+                            vec![],
                         ).map_err(|e| self.call_traces.set_error(e));
                     } else {
+                        let frame_cache = if RTCaches::caches_enabled() {
+                            FrameTypeCache::make_rc_for_function(&callee)
+                        } else {
+                            FrameTypeCache::make_rc()
+                        };
                         self.set_new_call_frame::<RTTCheck, RTCaches>(
                             &mut current_frame,
                             gas_meter,
                             callee,
                             CallType::ClosureDynamicDispatch,
-                            frame_cache.clone(),
+                            // Make sure the frame cache is empty for the new call.
+                            frame_cache,
                             mask,
                             captured_vec,
                         )?
@@ -1685,7 +1703,6 @@ where
                     AccountAddress::ONE,
                     Identifier::new("script".to_string()).unwrap(),
                 )).to_string();
-                let module_storage = resolver.module_storage();
                 let module_id = if let Some(mod_id) = target_func.module_id() {
                     mod_id.to_string()
                 } else {
