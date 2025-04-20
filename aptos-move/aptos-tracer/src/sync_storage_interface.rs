@@ -114,7 +114,7 @@ impl AptosTracerInterface for DBTracerInterface {
     ) -> Result<Option<Version>> {
         let ledger_version = self.get_latest_ledger_info_version()?;
         self.0
-            .get_account_transaction(account, seq, false, ledger_version)
+            .get_account_ordered_transaction(account, seq, false, ledger_version)
             .map_or_else(
                 |e| Err(anyhow::Error::from(e)),
                 |tp| Ok(tp.map(|e| e.version)),
