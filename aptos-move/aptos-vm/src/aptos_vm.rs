@@ -2329,7 +2329,7 @@ impl AptosVM {
                     txn_metadata.fee_payer().as_ref().map(|addr| serialized_signer(addr)),
                 );
 
-                let args = verifier::transaction_arg_validation::validate_combine_signer_and_txn_args(
+                let args = transaction_arg_validation::validate_combine_signer_and_txn_args(
                     &mut session,
                     &module_storage,
                     &serialized_signers,
@@ -2391,7 +2391,7 @@ impl AptosVM {
                     .collect();
                 let serialized_signers = SerializedSigners::new(senders_serialized, None);
 
-                let args = verifier::transaction_arg_validation::validate_combine_signer_and_txn_args(
+                let args = transaction_arg_validation::validate_combine_signer_and_txn_args(
                     &mut session,
                     &module_storage,
                     &serialized_signers,
