@@ -137,7 +137,7 @@ use std::{
     marker::Sync,
     sync::Arc,
 };
-use move_binary_format::call_trace::{CallTraces, GasInfo};
+use move_binary_format::call_trace::CallTraces;
 
 static EXECUTION_CONCURRENCY_LEVEL: OnceCell<usize> = OnceCell::new();
 static NUM_EXECUTION_SHARD: OnceCell<usize> = OnceCell::new();
@@ -2357,120 +2357,119 @@ impl AptosVM {
                 unimplemented!()
             }
             TransactionPayload::EntryFunction(entry_func) => {
-                let module_id = entry_func.module().clone();
-                let func_name = entry_func.function().to_owned();
-                let type_args = entry_func.ty_args().to_vec();
-                let arguments = entry_func.args().to_vec();
-
-                let func = module_storage.load_function(&module_id, &func_name, &type_args)?;
-                let traversal_storage = TraversalStorage::new();
-                let mut traversal_context = TraversalContext::new(&traversal_storage);
-
-                if vm.gas_feature_version() >= RELEASE_V1_10 {
-                    let module_id = traversal_context
-                        .referenced_module_ids
-                        .alloc(entry_func.module().clone());
-                    check_dependencies_and_charge_gas(&module_storage, &mut gas_meter, &mut traversal_context, [(
-                        module_id.address(),
-                        module_id.name(),
-                    )])?;
-                }
-                if vm.gas_feature_version() >= RELEASE_V1_27 {
-                    check_type_tag_dependencies_and_charge_gas(
-                        &module_storage,
-                        &mut gas_meter,
-                        &mut traversal_context,
-                        entry_func.ty_args(),
-                    )?;
-                }
-
                 // Create SerializedSigners from senders
                 let senders_serialized: Vec<Vec<u8>> = txn_metadata.senders()
                     .iter()
                     .map(|addr| serialized_signer(addr))
                     .collect();
                 let serialized_signers = SerializedSigners::new(senders_serialized, None);
-
-                let args = transaction_arg_validation::validate_combine_signer_and_txn_args(
+                Self::get_call_trace_for_entry_function(
                     &mut session,
-                    &module_storage,
+                    &vm,
                     &serialized_signers,
-                    arguments,
-                    &func,
-                    vm.features().is_enabled(FeatureFlag::STRUCT_CONSTRUCTORS),
-                )?;
-
-                let call_trace_res = session
-                    .call_trace_loaded_function(
-                        func,
-                        args,
-                        &mut gas_meter,
-                        &mut traversal_context,
-                        &module_storage,
-                    );
-
-                match call_trace_res {
-                    Ok(call_trace) => {
-                        Ok(call_trace)
-                    }
-                    Err(err) => {
-                        Err(anyhow::Error::msg(err.into_vm_status()))
-                    }
-                }
+                    entry_func,
+                    &module_storage,
+                    &mut gas_meter,
+                )
             }
-            TransactionPayload::Multisig(payload) => {
+            TransactionPayload::Multisig(multisig_payload) => {
                 let traversal_storage = TraversalStorage::new();
                 let mut traversal_context = TraversalContext::new(&traversal_storage);
 
                 let unreachable_error = VMStatus::error(StatusCode::UNREACHABLE, None);
-                let provided_payload = if let Some(payload) = &payload.transaction_payload {
-                    if let MultisigTransactionPayload::EntryFunction(entry_func) = payload {
-                        if vm.gas_feature_version() >= RELEASE_V1_10 {
-                            let module_id = traversal_context
-                                .referenced_module_ids
-                                .alloc(entry_func.module().clone());
-                            check_dependencies_and_charge_gas(&module_storage, &mut gas_meter, &mut traversal_context, [(
-                                module_id.address(),
-                                module_id.name(),
-                            )])?;
-                        }
-                        if vm.gas_feature_version() >= RELEASE_V1_27 {
-                            check_type_tag_dependencies_and_charge_gas(
-                                &module_storage,
-                                &mut gas_meter,
-                                &mut traversal_context,
-                                entry_func.ty_args(),
-                            )?;
-                        }
-                    }
+                let provided_payload = if let Some(payload) = &multisig_payload.transaction_payload {
                     bcs::to_bytes(&payload).map_err(|_| unreachable_error.clone())?
                 } else {
-                    bcs::to_bytes::<Vec<u8>>(&vec![]).map_err(|_| unreachable_error)?
+                    let invariant_violation_error = || {
+                        PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR)
+                            .with_message("MultiSig transaction error".to_string())
+                            .finish(Location::Undefined)
+                    };
+                    if vm
+                        .features()
+                        .is_abort_if_multisig_payload_mismatch_enabled()
+                    {
+                        vec![]
+                    } else {
+                        bcs::to_bytes::<Vec<u8>>(&vec![]).map_err(|_| invariant_violation_error())?
+                    }
                 };
 
-                let func = module_storage.load_function(
-                    &MULTISIG_ACCOUNT_MODULE,
-                    VALIDATE_MULTISIG_TRANSACTION,
-                    &vec![],
-                )?;
+                let mut prologue_session = PrologueSession::new(&vm, &txn_metadata, &resolver);
+                prologue_session
+                    .execute(|session| {
+                        session.execute_function_bypass_visibility(
+                            &MULTISIG_ACCOUNT_MODULE,
+                            VALIDATE_MULTISIG_TRANSACTION,
+                            vec![],
+                            serialize_values(&vec![
+                                MoveValue::Signer(txn_metadata.sender),
+                                MoveValue::Address(multisig_payload.multisig_address),
+                                MoveValue::vector_u8(provided_payload.clone()),
+                            ]),
+                            &mut UnmeteredGasMeter,
+                            &mut traversal_context,
+                            &module_storage,
+                        )
+                            .map(|_return_vals| ())
+                            .map_err(expect_no_verification_errors)
+                    })?;
 
-                let call_trace_res = session.call_trace_loaded_function(
-                    func,
-                    serialize_values(&vec![
-                        MoveValue::Signer(txn_metadata.sender),
-                        MoveValue::Address(payload.multisig_address),
-                        MoveValue::vector_u8(provided_payload),
-                    ]),
-                    &mut gas_meter,
-                    &mut traversal_context,
-                    &module_storage,
-                );
-                match call_trace_res {
-                    Ok(call_trace) => {
-                        Ok(call_trace)
-                    }
-                    Err(err) => {
-                        Err(anyhow::Error::msg(err.into_vm_status()))
+                // Failures here will be propagated back.
+                let payload_bytes: Vec<Vec<u8>> =
+                    session.execute_function_bypass_visibility(
+                        &MULTISIG_ACCOUNT_MODULE,
+                        GET_NEXT_TRANSACTION_PAYLOAD,
+                        vec![],
+                        serialize_values(&vec![
+                            MoveValue::Address(multisig_payload.multisig_address),
+                            MoveValue::vector_u8(provided_payload),
+                        ]),
+                        &mut gas_meter,
+                        &mut traversal_context,
+                        &module_storage,
+                    )?
+                        .return_values
+                        .into_iter()
+                        .map(|(bytes, _ty)| bytes)
+                        .collect::<Vec<_>>();
+                let payload_bytes = payload_bytes
+                    .first()
+                    // We expect the payload to either exists on chain or be passed along with the
+                    // transaction.
+                    .ok_or_else(|| {
+                        PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR)
+                            .with_message("Multisig payload bytes return error".to_string())
+                            .finish(Location::Undefined)
+                    })?;
+                // We have to deserialize twice as the first time returns the actual return type of the
+                // function, which is vec<u8>. The second time deserializes it into the correct
+                // EntryFunction payload type.
+                // If either deserialization fails for some reason, that means the user provided incorrect
+                // payload data either during transaction creation or execution.
+                let deserialization_error = || {
+                    PartialVMError::new(StatusCode::FAILED_TO_DESERIALIZE_ARGUMENT)
+                        .finish(Location::Undefined)
+                };
+                let payload_bytes =
+                    bcs::from_bytes::<Vec<u8>>(payload_bytes).map_err(|_| deserialization_error())?;
+                let payload = bcs::from_bytes::<MultisigTransactionPayload>(&payload_bytes)
+                    .map_err(|_| deserialization_error())?;
+
+                // Step 2: Execute the target payload. Transaction failure here is tolerated. In case of any
+                // failures, we'll discard the session and start a new one. This ensures that any data
+                // changes are not persisted.
+                // The multisig transaction would still be considered executed even if execution fails.
+                match payload {
+                    MultisigTransactionPayload::EntryFunction(entry_func) => {
+                        Self::get_call_trace_for_entry_function(
+                            &mut session,
+                            &vm,
+                            &SerializedSigners::new(vec![serialized_signer(&multisig_payload.multisig_address)], None),
+                            &entry_func,
+                            &module_storage,
+                            &mut gas_meter,
+                        )
                     }
                 }
             }
@@ -2503,6 +2502,69 @@ impl AptosVM {
             );
         };
         ret
+    }
+
+    pub fn get_call_trace_for_entry_function(
+        mut session: &mut SessionExt<impl AptosMoveResolver>,
+        vm: &AptosVM,
+        serialized_signers: &SerializedSigners,
+        entry_func: &EntryFunction,
+        module_storage: &impl AptosModuleStorage,
+        gas_meter: &mut impl AptosGasMeter,
+    ) -> anyhow::Result<CallTraces> {
+        let module_id = entry_func.module().clone();
+        let func_name = entry_func.function().to_owned();
+        let type_args = entry_func.ty_args().to_vec();
+        let arguments = entry_func.args().to_vec();
+
+        let func = module_storage.load_function(&module_id, &func_name, &type_args)?;
+        let traversal_storage = TraversalStorage::new();
+        let mut traversal_context = TraversalContext::new(&traversal_storage);
+
+        if vm.gas_feature_version() >= RELEASE_V1_10 {
+            let module_id = traversal_context
+                .referenced_module_ids
+                .alloc(entry_func.module().clone());
+            check_dependencies_and_charge_gas(module_storage, gas_meter, &mut traversal_context, [(
+                module_id.address(),
+                module_id.name(),
+            )])?;
+        }
+        if vm.gas_feature_version() >= RELEASE_V1_27 {
+            check_type_tag_dependencies_and_charge_gas(
+                module_storage,
+                gas_meter,
+                &mut traversal_context,
+                entry_func.ty_args(),
+            )?;
+        }
+
+        let args = transaction_arg_validation::validate_combine_signer_and_txn_args(
+            &mut session,
+            module_storage,
+            &serialized_signers,
+            arguments,
+            &func,
+            vm.features().is_enabled(FeatureFlag::STRUCT_CONSTRUCTORS),
+        )?;
+
+        let call_trace_res = session
+            .call_trace_loaded_function(
+                func,
+                args,
+                gas_meter,
+                &mut traversal_context,
+                module_storage,
+            );
+
+        match call_trace_res {
+            Ok(call_trace) => {
+                Ok(call_trace)
+            }
+            Err(err) => {
+                Err(anyhow::Error::msg(err.into_vm_status()))
+            }
+        }
     }
 
     pub fn execute_view_function(
