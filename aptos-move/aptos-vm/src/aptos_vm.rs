@@ -2752,6 +2752,7 @@ impl AptosVM {
                     }
                 }
             }
+            TransactionPayload::Payload(_) => todo!()
         };
 
         let change_set_configs = storage_gas_params.change_set_configs;

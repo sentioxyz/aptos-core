@@ -1537,10 +1537,11 @@ where
                     }
                 },
                 Err(err) => {
-                    self.call_traces.set_error(err);
+                    self.call_traces.set_error(err.clone());
                     while let Some(_) = self.call_stack.pop() {
                         let top_call = self.call_traces.pop().unwrap();
                         self.call_traces.push_call_trace(top_call);
+                        self.call_traces.set_error(err.clone());
                     }
                     return Ok(self.call_traces);
                 },
