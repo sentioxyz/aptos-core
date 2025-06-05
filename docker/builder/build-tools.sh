@@ -22,7 +22,6 @@ cargo build --locked --profile=$PROFILE \
     -p aptos-debugger \
     -p aptos-transaction-emitter \
     -p aptos-api-tester \
-    -p aptos-tracer \
     "$@"
 
 # After building, copy the binaries we need to `dist` since the `target` directory is used as docker cache mount and only available during the RUN step
@@ -37,7 +36,6 @@ BINS=(
     aptos-debugger
     aptos-transaction-emitter
     aptos-api-tester
-    aptos-tracer
 )
 
 mkdir dist

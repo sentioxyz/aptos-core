@@ -13,7 +13,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
         netcat \
         libpq-dev
 
-COPY  --link --from=tools-builder /aptos/dist/aptos-tracer /usr/local/bin/aptos-tracer
+COPY  --link --from=tracer-builder /aptos/dist/aptos-tracer /usr/local/bin/aptos-tracer
 
 ENV RUST_LOG_FORMAT=json
 
