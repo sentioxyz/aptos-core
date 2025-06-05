@@ -102,3 +102,10 @@ RUN --mount=type=secret,id=GIT_CREDENTIALS,target=/root/.git-credentials \
     --mount=type=cache,target=/usr/local/cargo/registry,id=indexer-builder-cargo-registry-cache \
     --mount=type=cache,target=/aptos/target,id=indexer-builder-target-cache-trixie \
     docker/builder/build-indexer.sh
+
+FROM builder-base as tracer-builder
+
+RUN --mount=type=secret,id=GIT_CREDENTIALS,target=/root/.git-credentials \
+    --mount=type=cache,target=/usr/local/cargo/git,id=tools-builder-cargo-git-cache \
+    --mount=type=cache,target=/usr/local/cargo/registry,id=tools-builder-cargo-registry-cache \
+    docker/builder/build-tracer.sh
