@@ -817,6 +817,53 @@ where
         }
     }
 
+    fn decode_move_values(
+        module_storage: &impl ModuleStorage,
+        param_tys: &[Type],
+        ty_args: &Vec<Type>,
+        values: Vec<Value>,
+    ) -> Vec<MoveValue> {
+        let ty_builder = &module_storage
+            .runtime_environment()
+            .vm_config()
+            .ty_builder;
+        values.into_iter().zip(param_tys).map(|(value, ty)| {
+            let ty = &ty_builder.create_ty_with_subst(ty, ty_args)?;
+            let (ty, value) = match ty {
+                Type::Reference(inner) | Type::MutableReference(inner) => {
+                    let ref_value: Reference = value.cast().map_err(|_err| {
+                        PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR).with_message(
+                            "non reference value given for a reference typed return value".to_string(),
+                        )
+                    })?;
+                    let inner_value = ref_value.read_ref()?;
+                    (&**inner, inner_value)
+                },
+                _ => (ty, value),
+            };
+            let layout = StorageLayoutConverter::new(
+                module_storage,
+            )
+                .type_to_type_layout(ty).map_err(|_err| {
+                PartialVMError::new(StatusCode::VERIFICATION_ERROR).with_message(
+                    "entry point functions cannot have non-serializable return types".to_string(),
+                )
+            })?;
+            let annotated_layout = StorageLayoutConverter::new(
+                module_storage,
+            )
+                .type_to_fully_annotated_layout(ty);
+            match annotated_layout {
+                Ok(a_layout) => {
+                    Ok(value.as_move_value(&layout).decorate(&a_layout))
+                }
+                Err(_) => {
+                    Ok(value.as_move_value(&layout))
+                }
+            }
+        }).map(|v: Result<MoveValue, PartialVMError>| v.unwrap_or(MoveValue::U8(0))).collect()
+    }
+
     fn call_trace_internal<RTTCheck: RuntimeTypeCheck, RTCaches: RuntimeCacheTraits>(
         mut self,
         data_store: &mut TransactionDataCache,
@@ -879,40 +926,7 @@ where
             fdef_idx: current_frame.function.index().0 as u16,
             module_id: current_module_id,
             func_name: current_frame.function.name().to_string(),
-            inputs: args_1.into_iter().zip(current_frame.function.param_tys()).map(|(value, ty)| {
-                let (ty, value) = match ty {
-                    Type::Reference(inner) | Type::MutableReference(inner) => {
-                        let ref_value: Reference = value.cast().map_err(|_err| {
-                            PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR).with_message(
-                                "non reference value given for a reference typed return value".to_string(),
-                            )
-                        })?;
-                        let inner_value = ref_value.read_ref()?;
-                        (&**inner, inner_value)
-                    },
-                    _ => (ty, value),
-                };
-                let layout = StorageLayoutConverter::new(
-                    module_storage,
-                )
-                .type_to_type_layout(ty).map_err(|_err| {
-                    PartialVMError::new(StatusCode::VERIFICATION_ERROR).with_message(
-                        "entry point functions cannot have non-serializable return types".to_string(),
-                    )
-                })?;
-                let annotated_layout = StorageLayoutConverter::new(
-                    module_storage,
-                )
-                .type_to_fully_annotated_layout(ty);
-                match annotated_layout {
-                    Ok(a_layout) => {
-                        Ok(value.as_move_value(&layout).decorate(&a_layout))
-                    }
-                    Err(_) => {
-                        Ok(value.as_move_value(&layout))
-                    }
-                }
-            }).map(|v: Result<MoveValue, PartialVMError>| v.unwrap_or(MoveValue::U8(0))).collect(),
+            inputs: Self::decode_move_values(module_storage, current_frame.function.param_tys(), &current_frame.function.ty_args, args_1),
             outputs: vec![],
             type_args: current_frame.function.ty_args().into_iter().map(|ty| {
                 TypeTagConverter::new(module_storage.runtime_environment()).ty_to_ty_tag(ty).unwrap().to_string()
@@ -961,40 +975,7 @@ where
                         outputs.push(val.copy_value());
                     }
                     self.call_traces.set_outputs(
-                        outputs.into_iter().zip(current_frame.function.return_tys()).map(|(value, ty)| {
-                            let (ty, value) = match ty {
-                                Type::Reference(inner) | Type::MutableReference(inner) => {
-                                    let ref_value: Reference = value.cast().map_err(|_err| {
-                                        PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR).with_message(
-                                            "non reference value given for a reference typed return value".to_string(),
-                                        )
-                                    })?;
-                                    let inner_value = ref_value.read_ref()?;
-                                    (&**inner, inner_value)
-                                },
-                                _ => (ty, value),
-                            };
-                            let layout = StorageLayoutConverter::new(
-                                module_storage,
-                            )
-                            .type_to_type_layout(ty).map_err(|_err| {
-                                PartialVMError::new(StatusCode::VERIFICATION_ERROR).with_message(
-                                    "entry point functions cannot have non-serializable return types".to_string(),
-                                )
-                            })?;
-                            let annotated_layout = StorageLayoutConverter::new(
-                                module_storage,
-                            )
-                            .type_to_fully_annotated_layout(ty);
-                            match annotated_layout {
-                                Ok(a_layout) => {
-                                    Ok(value.as_move_value(&layout).decorate(&a_layout))
-                                }
-                                Err(_) => {
-                                    Ok(value.as_move_value(&layout))
-                                }
-                            }
-                        }).map(|v: Result<MoveValue, PartialVMError>| v.unwrap_or(MoveValue::U8(0))).collect());
+                        Self::decode_move_values(module_storage, current_frame.function.return_tys(), &current_frame.function.ty_args, outputs));
                     self.call_traces.set_gas_end(u64::from(gas_meter.balance_internal()));
 
                     if let Some(frame) = self.call_stack.pop() {
@@ -1115,40 +1096,7 @@ where
                         fdef_idx: current_frame.function.index().0 as u16,
                         module_id: module_id.to_string(),
                         func_name: function.name().to_string(),
-                        inputs: inputs.into_iter().zip(function.param_tys()).map(|(value, ty)| {
-                            let (ty, value) = match ty {
-                                Type::Reference(inner) | Type::MutableReference(inner) => {
-                                    let ref_value: Reference = value.cast().map_err(|_err| {
-                                        PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR).with_message(
-                                            "non reference value given for a reference typed return value".to_string(),
-                                        )
-                                    })?;
-                                    let inner_value = ref_value.read_ref()?;
-                                    (&**inner, inner_value)
-                                },
-                                _ => (ty, value),
-                            };
-                            let layout = StorageLayoutConverter::new(
-                                module_storage,
-                            )
-                                .type_to_type_layout(ty).map_err(|_err| {
-                                PartialVMError::new(StatusCode::VERIFICATION_ERROR).with_message(
-                                    "entry point functions cannot have non-serializable return types".to_string(),
-                                )
-                            })?;
-                            let annotated_layout = StorageLayoutConverter::new(
-                                module_storage,
-                            )
-                                .type_to_fully_annotated_layout(ty);
-                            match annotated_layout {
-                                Ok(a_layout) => {
-                                    Ok(value.as_move_value(&layout).decorate(&a_layout))
-                                }
-                                Err(_) => {
-                                    Ok(value.as_move_value(&layout))
-                                }
-                            }
-                        }).map(|v: Result<MoveValue, PartialVMError>| v.unwrap_or(MoveValue::U8(0))).collect(),
+                        inputs: Self::decode_move_values(module_storage, function.param_tys(), &function.ty_args, inputs),
                         outputs: vec![],
                         type_args: vec![],
                         sub_traces: CallTraces::new(),
@@ -1286,40 +1234,7 @@ where
                         fdef_idx: current_frame.function.index().0 as u16,
                         module_id: module_id.to_string(),
                         func_name: function.name().to_string(),
-                        inputs: inputs.into_iter().zip(function.param_tys()).map(|(value, ty)| {
-                            let (ty, value) = match ty {
-                                Type::Reference(inner) | Type::MutableReference(inner) => {
-                                    let ref_value: Reference = value.cast().map_err(|_err| {
-                                        PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR).with_message(
-                                            "non reference value given for a reference typed return value".to_string(),
-                                        )
-                                    })?;
-                                    let inner_value = ref_value.read_ref()?;
-                                    (&**inner, inner_value)
-                                },
-                                _ => (ty, value),
-                            };
-                            let layout = StorageLayoutConverter::new(
-                                module_storage,
-                            )
-                                .type_to_type_layout(ty).map_err(|_err| {
-                                PartialVMError::new(StatusCode::VERIFICATION_ERROR).with_message(
-                                    "entry point functions cannot have non-serializable return types".to_string(),
-                                )
-                            })?;
-                            let annotated_layout = StorageLayoutConverter::new(
-                                module_storage,
-                            )
-                                .type_to_fully_annotated_layout(ty);
-                            match annotated_layout {
-                                Ok(a_layout) => {
-                                    Ok(value.as_move_value(&layout).decorate(&a_layout))
-                                }
-                                Err(_) => {
-                                    Ok(value.as_move_value(&layout))
-                                }
-                            }
-                        }).map(|v: Result<MoveValue, PartialVMError>| v.unwrap_or(MoveValue::U8(0))).collect(),
+                        inputs: Self::decode_move_values(module_storage, function.param_tys(), &function.ty_args, inputs),
                         outputs: vec![],
                         type_args: ty_args.iter().map(|ty| {
                             TypeTagConverter::new(module_storage.runtime_environment()).ty_to_ty_tag(ty).unwrap().to_string()
