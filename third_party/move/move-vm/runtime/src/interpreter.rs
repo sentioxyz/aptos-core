@@ -75,6 +75,7 @@ use std::{
 use std::error::Error;
 use move_binary_format::call_trace::{InternalCallTrace, CallTraces, GasInfo};
 use move_core_types::value::MoveValue;
+use crate::storage::ty_depth_checker::TypeDepthChecker;
 
 /// A category of information which can be traced by the interpreter.
 #[derive(Debug, Clone, PartialOrd, Ord, PartialEq, Eq)]
@@ -236,6 +237,7 @@ impl Interpreter {
         args: Vec<Value>,
         data_store: &mut TransactionDataCache,
         module_storage: &impl ModuleStorage,
+        ty_depth_checker: &TypeDepthChecker<impl Loader>,
         resource_resolver: &impl ResourceResolver,
         gas_meter: &mut impl GasMeter,
         traversal_context: &mut TraversalContext,
@@ -246,6 +248,7 @@ impl Interpreter {
             args,
             data_store,
             module_storage,
+            ty_depth_checker,
             resource_resolver,
             gas_meter,
             traversal_context,
@@ -1094,7 +1097,7 @@ where
             inputs: Self::decode_move_values(module_storage, current_frame.function.param_tys(), &current_frame.function.ty_args, args_1),
             outputs: vec![],
             type_args: current_frame.function.ty_args().into_iter().map(|ty| {
-                TypeTagConverter::new(module_storage.runtime_environment()).ty_to_ty_tag(ty).unwrap().to_string()
+                TypeTagConverter::new(module_storage.runtime_environment()).ty_to_ty_tag(ty).unwrap().to_canonical_string()
             }).collect(),
             sub_traces: CallTraces::new(),
             gas_info: GasInfo::make_frame(u64::from(gas_meter.balance_internal())),
@@ -1114,6 +1117,7 @@ where
                     resource_resolver,
                     module_storage,
                     gas_meter,
+                    traversal_context,
                 )
                 .map_err(|err| self.attach_state_if_invariant_violation(err, &current_frame));
             match exit_code {
@@ -1182,11 +1186,12 @@ where
                                     (Rc::clone(&entry.0), Rc::clone(&entry.1))
                                 },
                                 btree_map::Entry::Vacant(entry) => {
-                                    let function = Rc::new(self.load_function(
-                                        module_storage,
-                                        &current_frame,
-                                        fh_idx,
-                                    ).map_err(|e| self.make_call_trace_error(e))?);
+                                    let function =
+                                        Rc::new(self.load_function_no_visibility_checks(
+                                            module_storage,
+                                            &current_frame,
+                                            fh_idx,
+                                        ).map_err(|e| self.make_call_trace_error(e))?);
                                     let frame_cache =
                                         FrameTypeCache::make_rc_for_function(&function);
 
@@ -1202,7 +1207,7 @@ where
                             }
                         }
                     } else {
-                        let function = Rc::<LoadedFunction>::new(self.load_function(
+                        let function = Rc::<LoadedFunction>::new(self.load_function_no_visibility_checks(
                             module_storage,
                             &current_frame,
                             fh_idx,
@@ -1306,7 +1311,7 @@ where
                                 },
                                 btree_map::Entry::Vacant(entry) => {
                                     let function =
-                                        Rc::<LoadedFunction>::new(self.load_generic_function(
+                                        Rc::<LoadedFunction>::new(self.load_generic_function_no_visibility_checks(
                                             module_storage,
                                             &current_frame,
                                             gas_meter,
@@ -1328,7 +1333,7 @@ where
                         }
                     } else {
                         let function =
-                            Rc::<LoadedFunction>::new(self.load_generic_function(
+                            Rc::<LoadedFunction>::new(self.load_generic_function_no_visibility_checks(
                                 module_storage,
                                 &current_frame,
                                 gas_meter,
@@ -1402,7 +1407,7 @@ where
                         inputs: Self::decode_move_values(module_storage, function.param_tys(), &function.ty_args, inputs),
                         outputs: vec![],
                         type_args: ty_args.iter().map(|ty| {
-                            TypeTagConverter::new(module_storage.runtime_environment()).ty_to_ty_tag(ty).unwrap().to_string()
+                            TypeTagConverter::new(module_storage.runtime_environment()).ty_to_ty_tag(ty).unwrap().to_canonical_string()
                         }).collect(),
                         sub_traces: CallTraces::new(),
                         gas_info: GasInfo::make_frame(u64::from(gas_meter.balance_internal())),
@@ -1446,7 +1451,7 @@ where
                                 //   to be able to let scripts use closures.
                                 let err = PartialVMError::new_invariant_violation(format!(
                                     "module id required to charge gas for function `{}`",
-                                    lazy_function.to_stable_string()
+                                    lazy_function.to_canonical_string()
                                 ));
                                 return Err(set_err_info!(current_frame, err));
                             };
@@ -1476,7 +1481,7 @@ where
                     // Resolve the function. This may lead to loading the code related
                     // to this function.
                     let callee = lazy_function
-                        .with_resolved_function(module_storage, |f| Ok(f.clone()))
+                        .as_resolved(module_storage)
                         .map_err(|e| set_err_info!(current_frame, e))
                         .map_err(|e| self.make_call_trace_error(e))?;
 
@@ -1933,7 +1938,7 @@ where
                     }).map(|v: Result<MoveValue, PartialVMError>| v.unwrap_or(MoveValue::U8(0))).collect(),
                     outputs: vec![],
                     type_args: ty_args.iter().map(|ty| {
-                        TypeTagConverter::new(module_storage.runtime_environment()).ty_to_ty_tag(ty).unwrap().to_string()
+                        TypeTagConverter::new(module_storage.runtime_environment()).ty_to_ty_tag(ty).unwrap().to_canonical_string()
                     }).collect(),
                     sub_traces: CallTraces::new(),
                     gas_info: GasInfo::make_frame(u64::from(gas_meter.balance_internal())),
