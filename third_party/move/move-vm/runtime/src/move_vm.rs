@@ -29,7 +29,7 @@ use move_vm_types::{
     values::{Locals, Reference, VMValueCast, Value},
 };
 use std::borrow::Borrow;
-use move_binary_format::call_trace::CallTraces;
+use move_binary_format::call_trace::{CallTraceError, CallTraces};
 
 /// Return values from function execution in [MoveVm].
 #[derive(Debug)]
@@ -163,7 +163,8 @@ impl MoveVM {
         extensions: &mut NativeContextExtensions,
         module_storage: &impl ModuleStorage,
         resource_resolver: &impl ResourceResolver,
-    ) -> VMResult<CallTraces> {
+    ) -> Result<(CallTraces, SerializedReturnValues), CallTraceError> {
+        let mut ret_call_traces = CallTraces::new();
         let vm_config = module_storage.runtime_environment().vm_config();
         let ty_builder = &vm_config.ty_builder;
 
@@ -174,12 +175,17 @@ impl MoveVM {
                 .map_err(|err| err.finish(Location::Undefined))
         };
 
-        let param_tys = create_ty_with_subst(function.param_tys())?;
-        let (_, deserialized_args) =
+        let param_tys = create_ty_with_subst(function.param_tys())
+            .map_err(|e| ret_call_traces.push_error_frame(e))?;
+        let (mut dummy_locals, deserialized_args) =
             deserialize_args(module_storage, &param_tys, serialized_args)
-                .map_err(|e| e.finish(Location::Undefined))?;
+                .map_err(|e| e.finish(Location::Undefined))
+                .map_err(|e| ret_call_traces.push_error_frame(e))?;
 
-        dispatch_loader!(module_storage, loader, {
+        let return_tys = create_ty_with_subst(function.return_tys())
+            .map_err(|e| ret_call_traces.push_error_frame(e))?;
+
+        let ret = dispatch_loader!(module_storage, loader, {
             let ty_depth_checker = TypeDepthChecker::new(&loader);
             Interpreter::call_trace(
                 function,
@@ -192,7 +198,42 @@ impl MoveVM {
                 traversal_context,
                 extensions,
             )
-        })
+        });
+        if let Ok((call_traces, return_values)) = ret {
+            ret_call_traces.merge(call_traces).unwrap();
+            let return_values = serialize_return_values(module_storage, &return_tys, return_values)
+                .map_err(|e| e.finish(Location::Undefined))
+                .map_err(|e| ret_call_traces.push_error_frame(e))?;
+            let mutable_reference_outputs = param_tys
+                .iter()
+                .enumerate()
+                .filter_map(|(idx, ty)| match ty {
+                    Type::MutableReference(inner_ty) => Some((idx, inner_ty.as_ref())),
+                    _ => None,
+                })
+                .map(|(idx, ty)| {
+                    // serialize return values first in the case that a value points into this local
+                    let local_val =
+                        dummy_locals.move_loc(idx, vm_config.check_invariant_in_swap_loc)?;
+                    let (bytes, layout) = serialize_return_value(module_storage, ty, local_val)?;
+                    Ok((idx as LocalIndex, bytes, layout))
+                })
+                .collect::<PartialVMResult<_>>()
+                .map_err(|e| e.finish(Location::Undefined))
+                .map_err(|e| ret_call_traces.push_error_frame(e))?;
+
+            // locals should not be dropped until all return values are serialized
+            drop(dummy_locals);
+            Ok((
+                ret_call_traces,
+                SerializedReturnValues {
+                    mutable_reference_outputs,
+                    return_values,
+                }
+            ))
+        } else {
+            Err(ret.err().unwrap())
+        }
     }
 }
 

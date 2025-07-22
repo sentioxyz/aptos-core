@@ -50,8 +50,7 @@ use move_vm_types::{
     values::Value,
 };
 use std::{borrow::Borrow, collections::BTreeMap, sync::Arc};
-use aptos_gas_meter::AptosGasMeter;
-use move_binary_format::call_trace::CallTraces;
+use move_binary_format::call_trace::{CallTraceError, CallTraces};
 
 pub mod respawned_session;
 pub mod session_id;
@@ -171,10 +170,10 @@ where
         &mut self,
         func: LoadedFunction,
         args: Vec<impl Borrow<[u8]>>,
-        gas_meter: &mut impl AptosGasMeter,
+        gas_meter: &mut impl GasMeter,
         traversal_context: &mut TraversalContext,
         module_storage: &impl ModuleStorage,
-    ) -> VMResult<CallTraces> {
+    ) -> Result<(CallTraces, SerializedReturnValues), CallTraceError> {
         MoveVM::call_trace_loaded_function(
             func,
             args,

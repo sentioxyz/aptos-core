@@ -138,7 +138,7 @@ use std::{
     marker::Sync,
     sync::Arc,
 };
-use move_binary_format::call_trace::CallTraces;
+use move_binary_format::call_trace::{CallTraces, InternalCallTrace};
 
 static EXECUTION_CONCURRENCY_LEVEL: OnceCell<usize> = OnceCell::new();
 static NUM_EXECUTION_SHARD: OnceCell<usize> = OnceCell::new();
@@ -2443,27 +2443,36 @@ impl AptosVM {
                     txn_metadata.fee_payer().as_ref().map(|addr| serialized_signer(addr)),
                 );
 
-                let args = transaction_arg_validation::validate_combine_signer_and_txn_args(
+                match transaction_arg_validation::validate_combine_signer_and_txn_args_call_trace(
                     &mut session,
                     &module_storage,
                     &serialized_signers,
                     convert_txn_args(script.args()),
                     &func,
                     vm.features().is_enabled(FeatureFlag::STRUCT_CONSTRUCTORS),
-                )?;
-                let call_trace_res = session.call_trace_loaded_function(
-                    func,
-                    args,
-                    &mut gas_meter,
-                    &mut traversal_context,
-                    &module_storage,
-                );
-                match call_trace_res {
-                    Ok(call_trace) => {
-                        Ok(call_trace)
+                ) {
+                    Ok((prologue_call_traces, args)) => {
+                        let prologue_frame = Self::make_prologue_frame(prologue_call_traces);
+                        let call_trace_res = session.call_trace_loaded_function(
+                            func,
+                            args,
+                            &mut gas_meter,
+                            &mut traversal_context,
+                            &module_storage,
+                        );
+                        let mut ret = match call_trace_res {
+                            Ok((call_traces, _)) => call_traces,
+                            Err(err) => err.call_traces
+                        };
+                        ret.prepend_call_trace(prologue_frame);
+                        Ok(ret)
                     }
                     Err(err) => {
-                        Err(anyhow::Error::msg(err.into_vm_status()))
+                        let prologue_call_traces = err.call_traces;
+                        let prologue_frame = Self::make_prologue_frame(prologue_call_traces);
+                        let mut ret = CallTraces::new();
+                        ret.push(prologue_frame).expect("Something went wrong");
+                        Ok(ret)
                     }
                 }
             }
@@ -2654,31 +2663,47 @@ impl AptosVM {
             )?;
         }
 
-        let args = transaction_arg_validation::validate_combine_signer_and_txn_args(
+        match transaction_arg_validation::validate_combine_signer_and_txn_args_call_trace(
             &mut session,
             module_storage,
             &serialized_signers,
             arguments,
             &func,
             vm.features().is_enabled(FeatureFlag::STRUCT_CONSTRUCTORS),
-        )?;
-
-        let call_trace_res = session
-            .call_trace_loaded_function(
-                func,
-                args,
-                gas_meter,
-                &mut traversal_context,
-                module_storage,
-            );
-
-        match call_trace_res {
-            Ok(call_trace) => {
-                Ok(call_trace)
+        ) {
+            Ok((prologue_call_traces, args)) => {
+                let prologue_frame = Self::make_prologue_frame(prologue_call_traces);
+                let call_trace_res = session.call_trace_loaded_function(
+                    func,
+                    args,
+                    gas_meter,
+                    &mut traversal_context,
+                    module_storage,
+                );
+                let mut ret = match call_trace_res {
+                    Ok((call_traces, _)) => call_traces,
+                    Err(err) => err.call_traces
+                };
+                ret.prepend_call_trace(prologue_frame);
+                Ok(ret)
             }
             Err(err) => {
-                Err(anyhow::Error::msg(err.into_vm_status()))
+                let prologue_call_traces = err.call_traces;
+                let prologue_frame = Self::make_prologue_frame(prologue_call_traces);
+                let mut ret = CallTraces::new();
+                ret.push(prologue_frame).expect("Something went wrong");
+                Ok(ret)
             }
+        }
+    }
+
+    fn make_prologue_frame(call_traces: CallTraces) -> InternalCallTrace {
+        InternalCallTrace {
+            from_module_id: "0000000000000000000000000000000000000000000000000000000000000000::transaction_arg_validation".parse().unwrap(),
+            module_id: "0000000000000000000000000000000000000000000000000000000000000000::transaction_arg_validation".parse().unwrap(),
+            func_name: "validate_combine_signer_and_txn_args".parse().unwrap(),
+            sub_traces: call_traces,
+            ..InternalCallTrace::default()
         }
     }
 
