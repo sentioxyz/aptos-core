@@ -181,16 +181,20 @@ impl MoveVM {
             deserialize_args(module_storage, &param_tys, serialized_args)
                 .map_err(|e| e.finish(Location::Undefined))?;
 
-        Interpreter::call_trace(
-            function,
-            deserialized_args,
-            data_store,
-            module_storage,
-            resource_resolver,
-            gas_meter,
-            traversal_context,
-            extensions,
-        )
+        dispatch_loader!(module_storage, loader, {
+            let ty_depth_checker = TypeDepthChecker::new(&loader);
+            Interpreter::call_trace(
+                function,
+                deserialized_args,
+                data_store,
+                module_storage,
+                &ty_depth_checker,
+                resource_resolver,
+                gas_meter,
+                traversal_context,
+                extensions,
+            )
+        })
     }
 }
 
