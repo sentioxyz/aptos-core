@@ -142,20 +142,6 @@ pub(crate) trait InterpreterDebugInterface {
     ) -> PartialVMResult<()>;
 }
 
-#[derive(Clone, Debug)]
-struct CallTraceError {
-    vm_error: VMError,
-    call_traces: CallTraces,
-}
-
-impl Error for CallTraceError {}
-
-impl fmt::Display for CallTraceError {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "Something went wrong")
-    }
-}
-
 /// `InterpreterImpl` instances can execute Move functions.
 ///
 /// An `Interpreter` instance is a stand alone execution context for a function.
@@ -241,7 +227,7 @@ impl Interpreter {
         gas_meter: &mut impl GasMeter,
         traversal_context: &mut TraversalContext,
         extensions: &mut NativeContextExtensions,
-    ) -> VMResult<CallTraces> {
+    ) -> Result<(CallTraces, Vec<Value>), CallTraceError> {
         InterpreterImpl::call_trace(
             function,
             args,
@@ -916,10 +902,9 @@ where
     }
 
     fn make_call_trace_error(&self, vm_error: VMError) -> CallTraceError {
-        CallTraceError {
-            vm_error,
-            call_traces: self.call_traces.clone(),
-        }
+        let mut call_traces = self.call_traces.clone();
+        call_traces.set_error(vm_error.clone());
+        CallTraceError { call_traces, vm_error }
     }
 
     fn decode_move_values(
@@ -979,7 +964,7 @@ where
         extensions: &mut NativeContextExtensions,
         function: LoadedFunction,
         args: Vec<Value>,
-    ) -> Result<CallTraces, CallTraceError> {
+    ) -> Result<(CallTraces, Vec<Value>), CallTraceError> {
         let mut locals = Locals::new(function.local_tys().len());
         let mut args_1 = vec![];
         self.call_traces = CallTraces::new();
@@ -1099,7 +1084,7 @@ where
                         let top_call = self.call_traces.pop().unwrap();
                         self.call_traces.push_call_trace(top_call);
                     } else {
-                        return Ok(self.call_traces);
+                        return Ok((self.call_traces, self.operand_stack.value));
                     }
                 },
                 Ok(ExitCode::Call(fh_idx)) => {

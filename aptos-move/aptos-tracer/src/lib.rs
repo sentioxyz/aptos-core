@@ -238,7 +238,7 @@ impl SyncAptosTracer {
                 let mut package_names = HashMap::new();
                 for account in &call_trace.1 {
                     let package_registry = self.debugger.get_package_registry(
-                        AccountAddress::from_str(account.as_str()).unwrap(), Version::from(txn_data.version)).unwrap();
+                        AccountAddress::from_str(account.as_str()).unwrap(), Version::from(txn_data.version)).unwrap_or_default();
                     match package_registry {
                         None => {}
                         Some(packages) => {
