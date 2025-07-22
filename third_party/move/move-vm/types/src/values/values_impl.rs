@@ -5061,7 +5061,7 @@ impl Value {
     }
 
     pub fn copy_value(&self) -> Self {
-        Self(self.0.copy_value().unwrap())
+        Self(self.0.copy_value(1, Some(DEFAULT_MAX_VM_VALUE_NESTED_DEPTH)).unwrap())
     }
 }
 

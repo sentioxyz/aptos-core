@@ -2,30 +2,15 @@
 // Copyright (c) The Move Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::{
-    access_control::AccessControlState,
-    check_type_tag_dependencies_and_charge_gas,
-    config::VMConfig,
-    data_cache::{DataCacheEntry, TransactionDataCache},
-    frame::Frame,
-    frame_type_cache::{
-        AllRuntimeCaches, FrameTypeCache, NoRuntimeCaches, PerInstructionCache, RuntimeCacheTraits,
-    },
-    loader::LazyLoadedFunction,
-    module_traversal::TraversalContext,
-    native_extensions::NativeContextExtensions,
-    native_functions::NativeContext,
-    reentrancy_checker::{CallType, ReentrancyChecker},
-    runtime_type_checks::{
-        verify_pack_closure, FullRuntimeTypeCheck, NoRuntimeTypeCheck, RuntimeTypeCheck,
-    },
-    storage::{
-        dependencies_gas_charging::check_dependencies_and_charge_gas,
-        depth_formula_calculator::DepthFormulaCalculator, ty_tag_converter::TypeTagConverter,
-        ty_layout_converter::LayoutConverter, ty_layout_converter::StorageLayoutConverter,
-    },
-    trace, LoadedFunction, ModuleStorage, RuntimeEnvironment,
-};
+use crate::{access_control::AccessControlState, check_type_tag_dependencies_and_charge_gas, config::VMConfig, data_cache::{DataCacheEntry, TransactionDataCache}, frame::Frame, frame_type_cache::{
+    AllRuntimeCaches, FrameTypeCache, NoRuntimeCaches, PerInstructionCache, RuntimeCacheTraits,
+}, loader::LazyLoadedFunction, module_traversal::TraversalContext, native_extensions::NativeContextExtensions, native_functions::NativeContext, reentrancy_checker::{CallType, ReentrancyChecker}, runtime_type_checks::{
+    verify_pack_closure, FullRuntimeTypeCheck, NoRuntimeTypeCheck, RuntimeTypeCheck,
+}, storage::{
+    dependencies_gas_charging::check_dependencies_and_charge_gas,
+    ty_tag_converter::TypeTagConverter,
+    ty_layout_converter::LayoutConverter, ty_layout_converter::StorageLayoutConverter,
+}, trace, LoadedFunction, Loader, ModuleStorage, RuntimeEnvironment};
 use fail::fail_point;
 use move_binary_format::{
     errors::*,
@@ -58,6 +43,7 @@ use std::{cell::RefCell, cmp::min, collections::{btree_map, VecDeque}, fmt, fmt:
 use std::error::Error;
 use move_binary_format::call_trace::{InternalCallTrace, CallTraces, GasInfo};
 use move_core_types::value::MoveValue;
+use crate::storage::ty_depth_checker::TypeDepthChecker;
 
 macro_rules! set_err_info {
     ($frame:ident, $e:expr) => {{
@@ -159,6 +145,7 @@ impl Interpreter {
         args: Vec<Value>,
         data_store: &mut TransactionDataCache,
         module_storage: &impl ModuleStorage,
+        ty_depth_checker: &TypeDepthChecker<impl Loader>,
         resource_resolver: &impl ResourceResolver,
         gas_meter: &mut impl GasMeter,
         traversal_context: &mut TraversalContext,
@@ -169,6 +156,7 @@ impl Interpreter {
             args,
             data_store,
             module_storage,
+            ty_depth_checker,
             resource_resolver,
             gas_meter,
             traversal_context,
@@ -306,6 +294,7 @@ where
         args: Vec<Value>,
         data_store: &mut TransactionDataCache,
         module_storage: &impl ModuleStorage,
+        ty_depth_checker: &TypeDepthChecker<LoaderImpl>,
         resource_resolver: &impl ResourceResolver,
         gas_meter: &mut impl GasMeter,
         traversal_context: &mut TraversalContext,
@@ -318,6 +307,7 @@ where
             access_control: AccessControlState::default(),
             reentrancy_checker: ReentrancyChecker::default(),
             call_traces: CallTraces::new(),
+            ty_depth_checker,
         };
         let result = interpreter.call_trace_internal::<NoRuntimeTypeCheck, NoRuntimeCaches>(
             data_store,
@@ -929,7 +919,7 @@ where
             inputs: Self::decode_move_values(module_storage, current_frame.function.param_tys(), &current_frame.function.ty_args, args_1),
             outputs: vec![],
             type_args: current_frame.function.ty_args().into_iter().map(|ty| {
-                TypeTagConverter::new(module_storage.runtime_environment()).ty_to_ty_tag(ty).unwrap().to_string()
+                TypeTagConverter::new(module_storage.runtime_environment()).ty_to_ty_tag(ty).unwrap().to_canonical_string()
             }).collect(),
             sub_traces: CallTraces::new(),
             gas_info: GasInfo::make_frame(u64::from(gas_meter.balance_internal())),
@@ -949,6 +939,7 @@ where
                     resource_resolver,
                     module_storage,
                     gas_meter,
+                    traversal_context,
                 )
                 .map_err(|err| self.attach_state_if_invariant_violation(err, &current_frame));
             match exit_code {
@@ -1017,11 +1008,12 @@ where
                                     (Rc::clone(&entry.0), Rc::clone(&entry.1))
                                 },
                                 btree_map::Entry::Vacant(entry) => {
-                                    let function = Rc::new(self.load_function(
-                                        module_storage,
-                                        &current_frame,
-                                        fh_idx,
-                                    ).map_err(|e| self.make_call_trace_error(e))?);
+                                    let function =
+                                        Rc::new(self.load_function_no_visibility_checks(
+                                            module_storage,
+                                            &current_frame,
+                                            fh_idx,
+                                        ).map_err(|e| self.make_call_trace_error(e))?);
                                     let frame_cache =
                                         FrameTypeCache::make_rc_for_function(&function);
 
@@ -1037,7 +1029,7 @@ where
                             }
                         }
                     } else {
-                        let function = Rc::<LoadedFunction>::new(self.load_function(
+                        let function = Rc::<LoadedFunction>::new(self.load_function_no_visibility_checks(
                             module_storage,
                             &current_frame,
                             fh_idx,
@@ -1141,7 +1133,7 @@ where
                                 },
                                 btree_map::Entry::Vacant(entry) => {
                                     let function =
-                                        Rc::<LoadedFunction>::new(self.load_generic_function(
+                                        Rc::<LoadedFunction>::new(self.load_generic_function_no_visibility_checks(
                                             module_storage,
                                             &current_frame,
                                             gas_meter,
@@ -1163,7 +1155,7 @@ where
                         }
                     } else {
                         let function =
-                            Rc::<LoadedFunction>::new(self.load_generic_function(
+                            Rc::<LoadedFunction>::new(self.load_generic_function_no_visibility_checks(
                                 module_storage,
                                 &current_frame,
                                 gas_meter,
@@ -1237,7 +1229,7 @@ where
                         inputs: Self::decode_move_values(module_storage, function.param_tys(), &function.ty_args, inputs),
                         outputs: vec![],
                         type_args: ty_args.iter().map(|ty| {
-                            TypeTagConverter::new(module_storage.runtime_environment()).ty_to_ty_tag(ty).unwrap().to_string()
+                            TypeTagConverter::new(module_storage.runtime_environment()).ty_to_ty_tag(ty).unwrap().to_canonical_string()
                         }).collect(),
                         sub_traces: CallTraces::new(),
                         gas_info: GasInfo::make_frame(u64::from(gas_meter.balance_internal())),
@@ -1281,7 +1273,7 @@ where
                                 //   to be able to let scripts use closures.
                                 let err = PartialVMError::new_invariant_violation(format!(
                                     "module id required to charge gas for function `{}`",
-                                    lazy_function.to_stable_string()
+                                    lazy_function.to_canonical_string()
                                 ));
                                 return Err(set_err_info!(current_frame, err));
                             };
@@ -1311,7 +1303,7 @@ where
                     // Resolve the function. This may lead to loading the code related
                     // to this function.
                     let callee = lazy_function
-                        .with_resolved_function(module_storage, |f| Ok(f.clone()))
+                        .as_resolved(module_storage)
                         .map_err(|e| set_err_info!(current_frame, e))
                         .map_err(|e| self.make_call_trace_error(e))?;
 
@@ -1708,7 +1700,7 @@ where
                     }).map(|v: Result<MoveValue, PartialVMError>| v.unwrap_or(MoveValue::U8(0))).collect(),
                     outputs: vec![],
                     type_args: ty_args.iter().map(|ty| {
-                        TypeTagConverter::new(module_storage.runtime_environment()).ty_to_ty_tag(ty).unwrap().to_string()
+                        TypeTagConverter::new(module_storage.runtime_environment()).ty_to_ty_tag(ty).unwrap().to_canonical_string()
                     }).collect(),
                     sub_traces: CallTraces::new(),
                     gas_info: GasInfo::make_frame(u64::from(gas_meter.balance_internal())),

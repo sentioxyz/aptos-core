@@ -128,13 +128,7 @@ use move_core_types::{
     },
 };
 use move_vm_metrics::{Timer, VM_TIMER};
-use move_vm_runtime::{
-    check_dependencies_and_charge_gas, check_script_dependencies_and_check_gas,
-    check_type_tag_dependencies_and_charge_gas,
-    logging::expect_no_verification_errors,
-    module_traversal::{TraversalContext, TraversalStorage},
-    LoadedFunctionOwner, ModuleStorage, RuntimeEnvironment, WithRuntimeEnvironment,
-};
+use move_vm_runtime::{check_dependencies_and_charge_gas, check_script_dependencies_and_check_gas, check_type_tag_dependencies_and_charge_gas, logging::expect_no_verification_errors, module_traversal::{TraversalContext, TraversalStorage}, CodeStorage, LoadedFunctionOwner, ModuleStorage, RuntimeEnvironment, WithRuntimeEnvironment};
 use move_vm_types::gas::{GasMeter, UnmeteredGasMeter};
 use num_cpus;
 use once_cell::sync::OnceCell;
