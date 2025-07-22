@@ -98,20 +98,6 @@ pub(crate) trait InterpreterDebugInterface {
     ) -> PartialVMResult<()>;
 }
 
-#[derive(Clone, Debug)]
-struct CallTraceError {
-    vm_error: VMError,
-    call_traces: CallTraces,
-}
-
-impl Error for CallTraceError {}
-
-impl fmt::Display for CallTraceError {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "Something went wrong")
-    }
-}
-
 /// `InterpreterImpl` instances can execute Move functions.
 ///
 /// An `Interpreter` instance is a stand alone execution context for a function.
@@ -195,7 +181,7 @@ impl Interpreter {
         gas_meter: &mut impl GasMeter,
         traversal_context: &mut TraversalContext,
         extensions: &mut NativeContextExtensions,
-    ) -> VMResult<CallTraces> {
+    ) -> Result<(CallTraces, Vec<Value>), CallTraceError> {
         InterpreterImpl::call_trace(
             function,
             args,
@@ -404,7 +390,7 @@ where
         gas_meter: &mut impl GasMeter,
         traversal_context: &mut TraversalContext,
         extensions: &mut NativeContextExtensions,
-    ) -> VMResult<CallTraces> {
+    ) -> Result<(CallTraces, Vec<Value>), CallTraceError> {
         let interpreter = InterpreterImpl {
             operand_stack: Stack::new(),
             call_stack: CallStack::new(),
@@ -414,7 +400,7 @@ where
             call_traces: CallTraces::new(),
             ty_depth_checker,
         };
-        let result = interpreter.call_trace_internal::<NoRuntimeTypeCheck, NoRuntimeCaches>(
+        interpreter.call_trace_internal::<NoRuntimeTypeCheck, NoRuntimeCaches>(
             data_store,
             module_storage,
             resource_resolver,
@@ -423,22 +409,19 @@ where
             extensions,
             function,
             args,
-        );
-        match result {
-            Ok(call_traces) => Ok(call_traces),
-            Err( CallTraceError { mut call_traces, vm_error }) => {
-                if call_traces.len() == 0 {
-                    return Err(vm_error);
-                }
+        ).map_err(|CallTraceError { call_traces, vm_error }| {
+            let mut call_traces = call_traces.clone();
+            if call_traces.len() == 0 {
+                panic!("call traces len = 0")
+            }
+            call_traces.set_error(vm_error.clone());
+            while call_traces.len() > 1 {
+                let top_call = call_traces.pop().unwrap();
+                call_traces.push_call_trace(top_call);
                 call_traces.set_error(vm_error.clone());
-                while call_traces.len() > 1 {
-                    let top_call = call_traces.pop().unwrap();
-                    call_traces.push_call_trace(top_call);
-                    call_traces.set_error(vm_error.clone());
-                }
-                Ok(call_traces)
-            },
-        }
+            }
+            CallTraceError { call_traces, vm_error }
+        })
     }
 
     /// Main loop for the execution of a function.
@@ -949,10 +932,9 @@ where
     }
 
     fn make_call_trace_error(&self, vm_error: VMError) -> CallTraceError {
-        CallTraceError {
-            vm_error,
-            call_traces: self.call_traces.clone(),
-        }
+        let mut call_traces = self.call_traces.clone();
+        call_traces.set_error(vm_error.clone());
+        CallTraceError { call_traces, vm_error }
     }
 
     fn decode_move_values(
@@ -1012,7 +994,7 @@ where
         extensions: &mut NativeContextExtensions,
         function: LoadedFunction,
         args: Vec<Value>,
-    ) -> Result<CallTraces, CallTraceError> {
+    ) -> Result<(CallTraces, Vec<Value>), CallTraceError> {
         let mut locals = Locals::new(function.local_tys().len());
         let mut args_1 = vec![];
         self.call_traces = CallTraces::new();
@@ -1132,7 +1114,7 @@ where
                         let top_call = self.call_traces.pop().unwrap();
                         self.call_traces.push_call_trace(top_call);
                     } else {
-                        return Ok(self.call_traces);
+                        return Ok((self.call_traces, self.operand_stack.value));
                     }
                 },
                 Ok(ExitCode::Call(fh_idx)) => {
