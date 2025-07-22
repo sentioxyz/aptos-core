@@ -22,10 +22,6 @@ pub struct DebuggerServerConfig {
     #[serde(default = "DebuggerServerConfig::default_db_path")]
     pub db_path: PathBuf,
 
-    /// Rest endpoint
-    #[serde(default = "DebuggerServerConfig::default_rest_endpoint")]
-    pub rest_endpoint: String,
-
     #[serde(default = "DebuggerServerConfig::default_rest_endpoint_map")]
     pub rest_endpoint_map: HashMap<u16, String>,
 
@@ -45,7 +41,6 @@ impl DebuggerServerConfig {
             listen_address: DebuggerServerConfig::default_listen_address(),
             listen_port: DebuggerServerConfig::default_listen_port(),
             db_path: DebuggerServerConfig::default_db_path(),
-            rest_endpoint: DebuggerServerConfig::default_rest_endpoint(),
             rest_endpoint_map: DebuggerServerConfig::default_rest_endpoint_map(),
             use_db: DebuggerServerConfig::default_use_db(),
             sentio_endpoint: DebuggerServerConfig::default_sentio_endpoint(),
@@ -54,10 +49,6 @@ impl DebuggerServerConfig {
 
     pub fn set_db_path(&mut self, db_path: PathBuf) {
         self.db_path = db_path
-    }
-
-    pub fn set_rest_endpoint(&mut self, rest_endpoint: String) {
-        self.rest_endpoint = rest_endpoint
     }
 
     pub fn set_rest_endpoints(&mut self, rest_endpoint_map: HashMap<u16, String>) {

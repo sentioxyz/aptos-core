@@ -18,10 +18,7 @@ async fn call_trace(Path((chain_id, hash)): Path<(u16, String)>, config: Data<&D
     if config.use_db {
         tracer = SyncAptosTracer::db(config.db_path.to_str().unwrap(), config.clone().sentio_endpoint);
     } else {
-        let endpoint = match config.rest_endpoint_map.get(&chain_id) {
-            Some(endpoint) => endpoint,
-            None => &config.rest_endpoint
-        };
+        let endpoint = config.rest_endpoint_map.get(&chain_id).unwrap();
         tracer = SyncAptosTracer::rest_client(
             Client::new(Url::parse(endpoint.as_str()).unwrap()),
             config.clone().sentio_endpoint);
