@@ -23,10 +23,9 @@ use crate::{
     },
     storage::{
         loader::traits::Loader, ty_depth_checker::TypeDepthChecker,
-        ty_layout_converter::LayoutConverter,
         dependencies_gas_charging::check_dependencies_and_charge_gas,
-        depth_formula_calculator::DepthFormulaCalculator, ty_tag_converter::TypeTagConverter,
-        ty_layout_converter::LayoutConverter, ty_layout_converter::StorageLayoutConverter,
+        ty_tag_converter::TypeTagConverter,
+        ty_layout_converter::LayoutConverter,
     },
     trace, LoadedFunction, RuntimeEnvironment,
 };
@@ -43,12 +42,10 @@ use move_core_types::{
     account_address::AccountAddress,
     function::ClosureMask,
     gas_algebra::{NumArgs, NumBytes, NumTypeNodes},
-    language_storage::TypeTag,
     vm_status::{
         sub_status::unknown_invariant_violation::EPARANOID_FAILURE, StatusCode, StatusType,
     },
     language_storage::{TypeTag, ModuleId},
-    vm_status::{StatusCode, StatusType},
 };
 use move_core_types::identifier::Identifier;
 use move_vm_metrics::{Timer, VM_TIMER};
@@ -72,9 +69,9 @@ use std::{
     rc::Rc,
 };
 use std::error::Error;
-use move_binary_format::call_trace::{InternalCallTrace, CallTraces, GasInfo};
+use move_binary_format::call_trace::{InternalCallTrace, CallTraces, GasInfo, CallTraceError};
 use move_core_types::value::MoveValue;
-use crate::storage::ty_depth_checker::TypeDepthChecker;
+use move_vm_types::gas::DependencyGasMeter;
 
 macro_rules! set_err_info {
     ($frame:ident, $e:expr) => {{
@@ -171,23 +168,30 @@ impl Interpreter {
         )
     }
 
-    pub(crate) fn call_trace(
+    pub(crate) fn call_trace<LoaderImpl>(
         function: LoadedFunction,
         args: Vec<Value>,
-        data_store: &mut TransactionDataCache,
-        module_storage: &impl ModuleStorage,
-        ty_depth_checker: &TypeDepthChecker<impl Loader>,
+        data_cache: &mut TransactionDataCache,
+        function_caches: &mut InterpreterFunctionCaches,
+        loader: &LoaderImpl,
+        ty_depth_checker: &TypeDepthChecker<LoaderImpl>,
+        layout_converter: &LayoutConverter<LoaderImpl>,
         resource_resolver: &impl ResourceResolver,
         gas_meter: &mut impl GasMeter,
         traversal_context: &mut TraversalContext,
         extensions: &mut NativeContextExtensions,
-    ) -> Result<(CallTraces, Vec<Value>), CallTraceError> {
+    ) -> Result<(CallTraces, Vec<Value>), CallTraceError>
+    where
+        LoaderImpl: Loader,
+    {
         InterpreterImpl::call_trace(
             function,
             args,
-            data_store,
-            module_storage,
+            data_cache,
+            function_caches,
+            loader,
             ty_depth_checker,
+            layout_converter,
             resource_resolver,
             gas_meter,
             traversal_context,
@@ -383,9 +387,11 @@ where
     pub(crate) fn call_trace(
         function: LoadedFunction,
         args: Vec<Value>,
-        data_store: &mut TransactionDataCache,
-        module_storage: &impl ModuleStorage,
+        data_cache: &mut TransactionDataCache,
+        function_caches: &mut InterpreterFunctionCaches,
+        loader: &LoaderImpl,
         ty_depth_checker: &TypeDepthChecker<LoaderImpl>,
+        layout_converter: &LayoutConverter<LoaderImpl>,
         resource_resolver: &impl ResourceResolver,
         gas_meter: &mut impl GasMeter,
         traversal_context: &mut TraversalContext,
@@ -394,15 +400,20 @@ where
         let interpreter = InterpreterImpl {
             operand_stack: Stack::new(),
             call_stack: CallStack::new(),
-            vm_config: module_storage.runtime_environment().vm_config(),
+            vm_config: loader.runtime_environment().vm_config(),
             access_control: AccessControlState::default(),
             reentrancy_checker: ReentrancyChecker::default(),
-            call_traces: CallTraces::new(),
+            loader,
             ty_depth_checker,
+            layout_converter,
+            ref_state: RefCheckState::new(),
+            call_traces: CallTraces::new(),
         };
-        interpreter.call_trace_internal::<NoRuntimeTypeCheck, NoRuntimeCaches>(
-            data_store,
-            module_storage,
+
+        let function = Rc::new(function);
+        interpreter.call_trace_internal::<NoRuntimeTypeCheck,  NoRuntimeRefCheck, NoRuntimeCaches>(
+            data_cache,
+            function_caches,
             resource_resolver,
             gas_meter,
             traversal_context,
@@ -938,15 +949,14 @@ where
     }
 
     fn decode_move_values(
-        module_storage: &impl ModuleStorage,
+        &self,
+        gas_meter: &mut impl DependencyGasMeter,
+        traversal_context: &mut TraversalContext,
         param_tys: &[Type],
         ty_args: &Vec<Type>,
         values: Vec<Value>,
     ) -> Vec<MoveValue> {
-        let ty_builder = &module_storage
-            .runtime_environment()
-            .vm_config()
-            .ty_builder;
+        let ty_builder = &self.vm_config.ty_builder;
         values.into_iter().zip(param_tys).map(|(value, ty)| {
             let ty = &ty_builder.create_ty_with_subst(ty, ty_args)?;
             let (ty, value) = match ty {
@@ -961,38 +971,34 @@ where
                 },
                 _ => (ty, value),
             };
-            let layout = StorageLayoutConverter::new(
-                module_storage,
-            )
-                .type_to_type_layout(ty).map_err(|_err| {
+            let layout = self.layout_converter
+                .type_to_type_layout_with_delayed_fields(gas_meter, traversal_context, ty, false).map_err(|_err| {
                 PartialVMError::new(StatusCode::VERIFICATION_ERROR).with_message(
                     "entry point functions cannot have non-serializable return types".to_string(),
                 )
             })?;
-            let annotated_layout = StorageLayoutConverter::new(
-                module_storage,
-            )
-                .type_to_fully_annotated_layout(ty);
+            let annotated_layout = self.layout_converter
+                .type_to_annotated_type_layout_with_delayed_fields(gas_meter, traversal_context, ty);
             match annotated_layout {
                 Ok(a_layout) => {
-                    Ok(value.as_move_value(&layout).decorate(&a_layout))
+                    Ok(value.as_move_value(&layout.unpack().0).decorate(&a_layout.unpack().0))
                 }
                 Err(_) => {
-                    Ok(value.as_move_value(&layout))
+                    Ok(value.as_move_value(&layout.unpack().0))
                 }
             }
         }).map(|v: Result<MoveValue, PartialVMError>| v.unwrap_or(MoveValue::U8(0))).collect()
     }
 
-    fn call_trace_internal<RTTCheck: RuntimeTypeCheck, RTCaches: RuntimeCacheTraits>(
+    fn call_trace_internal<RTTCheck: RuntimeTypeCheck, RTRCheck: RuntimeRefCheck, RTCaches: RuntimeCacheTraits>(
         mut self,
-        data_store: &mut TransactionDataCache,
-        module_storage: &impl ModuleStorage,
+        data_cache: &mut TransactionDataCache,
+        function_caches: &mut InterpreterFunctionCaches,
         resource_resolver: &impl ResourceResolver,
         gas_meter: &mut impl GasMeter,
         traversal_context: &mut TraversalContext,
         extensions: &mut NativeContextExtensions,
-        function: LoadedFunction,
+        function: Rc<LoadedFunction>,
         args: Vec<Value>,
     ) -> Result<(CallTraces, Vec<Value>), CallTraceError> {
         let mut locals = Locals::new(function.local_tys().len());
@@ -1016,8 +1022,11 @@ where
             .map_err(|e| self.set_location(e))
             .map_err(|e| self.make_call_trace_error(e))?;
 
+        RTRCheck::init_entry(&function, &mut self.ref_state)
+            .map_err(|err| self.set_location(err))
+            .map_err(|e| self.make_call_trace_error(e))?;
+
         let frame_cache = FrameTypeCache::make_rc();
-        let function = Rc::new(function);
 
         let mut current_frame = Frame::make_new_frame::<RTTCheck>(
             gas_meter,
@@ -1046,10 +1055,10 @@ where
             fdef_idx: current_frame.function.index().0 as u16,
             module_id: current_module_id,
             func_name: current_frame.function.name().to_string(),
-            inputs: Self::decode_move_values(module_storage, current_frame.function.param_tys(), &current_frame.function.ty_args, args_1),
+            inputs: self.decode_move_values(gas_meter, traversal_context, current_frame.function.param_tys(), &current_frame.function.ty_args, args_1),
             outputs: vec![],
             type_args: current_frame.function.ty_args().into_iter().map(|ty| {
-                TypeTagConverter::new(module_storage.runtime_environment()).ty_to_ty_tag(ty).unwrap().to_canonical_string()
+                TypeTagConverter::new(self.loader.runtime_environment()).ty_to_ty_tag(ty).unwrap().to_canonical_string()
             }).collect(),
             sub_traces: CallTraces::new(),
             gas_info: GasInfo::make_frame(u64::from(gas_meter.balance_internal())),
@@ -1063,11 +1072,10 @@ where
 
         loop {
             let exit_code = current_frame
-                .execute_code::<RTTCheck, RTCaches>(
+                .execute_code::<RTTCheck, RTRCheck, RTCaches>(
                     &mut self,
-                    data_store,
+                    data_cache,
                     resource_resolver,
-                    module_storage,
                     gas_meter,
                     traversal_context,
                 )
@@ -1080,11 +1088,58 @@ where
                         .map(|(_idx, val)| val)
                         .collect::<Vec<_>>();
 
-                    // TODO: Check if the error location is set correctly.
                     gas_meter
                         .charge_drop_frame(non_ref_vals.iter())
                         .map_err(|e| self.set_location(e))
                         .map_err(|e| self.make_call_trace_error(e))?;
+                    // If the returning function has runtime checks on, the return types
+                    // will be on the caller stack.
+                    let caller_has_rt_checks = self
+                        .call_stack
+                        .0
+                        .last()
+                        .map(|f| RTTCheck::should_perform_checks(&f.function.function))
+                        .unwrap_or(false);
+                    let callee_has_rt_checks =
+                        RTTCheck::should_perform_checks(&current_frame.function.function);
+                    if callee_has_rt_checks {
+                        self.check_return_tys::<RTTCheck>(&mut current_frame)
+                            .map_err(|e| set_err_info!(current_frame, e))
+                            .map_err(|e| self.make_call_trace_error(e))?;
+                        if !caller_has_rt_checks {
+                            // The callee has pushed return types, but they aren't used by
+                            // the caller, so need to be removed.
+                            self.operand_stack
+                                .remove_tys(current_frame.function.return_tys().len())
+                                .map_err(|e| set_err_info!(current_frame, e))
+                                .map_err(|e| self.make_call_trace_error(e))?;
+                        }
+                    } else if caller_has_rt_checks {
+                        // We are not runtime checking this function, but in the caller,
+                        // so we must push the return types of the function onto the type stack,
+                        // following the runtime type checking protocol.
+                        let ty_args = current_frame.function.ty_args();
+                        if ty_args.is_empty() {
+                            for ret_ty in current_frame.function.return_tys() {
+                                self.operand_stack
+                                    .push_ty(ret_ty.clone())
+                                    .map_err(|e| set_err_info!(current_frame, e))
+                                    .map_err(|e| self.make_call_trace_error(e))?;
+                            }
+                        } else {
+                            for ret_ty in current_frame.function.return_tys() {
+                                let ret_ty = current_frame
+                                    .ty_builder()
+                                    .create_ty_with_subst(ret_ty, ty_args)
+                                    .map_err(|e| set_err_info!(current_frame, e))
+                                    .map_err(|e| self.make_call_trace_error(e))?;
+                                self.operand_stack
+                                    .push_ty(ret_ty)
+                                    .map_err(|e| set_err_info!(current_frame, e))
+                                    .map_err(|e| self.make_call_trace_error(e))?;
+                            }
+                        }
+                    }
 
                     self.access_control
                         .exit_function(&current_frame.function)
@@ -1096,7 +1151,7 @@ where
                         outputs.push(val.copy_value());
                     }
                     self.call_traces.set_outputs(
-                        Self::decode_move_values(module_storage, current_frame.function.return_tys(), &current_frame.function.ty_args, outputs));
+                        self.decode_move_values(gas_meter, traversal_context, current_frame.function.return_tys(), &current_frame.function.ty_args, outputs));
                     self.call_traces.set_gas_end(u64::from(gas_meter.balance_internal()));
 
                     if let Some(frame) = self.call_stack.pop() {
@@ -1126,47 +1181,41 @@ where
                         {
                             (Rc::clone(function), Rc::clone(frame_cache))
                         } else {
-                            match current_frame_cache.sub_frame_cache.entry(fh_idx) {
-                                btree_map::Entry::Occupied(entry) => {
-                                    let entry = entry.get();
-                                    current_frame_cache.per_instruction_cache
-                                        [current_frame.pc as usize] = PerInstructionCache::Call(
-                                        Rc::clone(&entry.0),
-                                        Rc::clone(&entry.1),
-                                    );
+                            let function = Rc::new(self.load_function_no_visibility_checks(
+                                gas_meter,
+                                traversal_context,
+                                &current_frame,
+                                fh_idx,
+                            ).map_err(|e| self.make_call_trace_error(e))?);
+                            let frame_cache =
+                                function_caches.get_or_create_frame_cache_non_generic(&function);
 
-                                    (Rc::clone(&entry.0), Rc::clone(&entry.1))
-                                },
-                                btree_map::Entry::Vacant(entry) => {
-                                    let function =
-                                        Rc::new(self.load_function_no_visibility_checks(
-                                            module_storage,
-                                            &current_frame,
-                                            fh_idx,
-                                        ).map_err(|e| self.make_call_trace_error(e))?);
-                                    let frame_cache =
-                                        FrameTypeCache::make_rc_for_function(&function);
+                            current_frame_cache.per_instruction_cache[current_frame.pc as usize] =
+                                PerInstructionCache::Call(
+                                    Rc::clone(&function),
+                                    Rc::clone(&frame_cache),
+                                );
 
-                                    entry.insert((Rc::clone(&function), Rc::clone(&frame_cache)));
-                                    current_frame_cache.per_instruction_cache
-                                        [current_frame.pc as usize] = PerInstructionCache::Call(
-                                        Rc::clone(&function),
-                                        Rc::clone(&frame_cache),
-                                    );
-
-                                    (function, frame_cache)
-                                },
-                            }
+                            (function, frame_cache)
                         }
                     } else {
-                        let function = Rc::<LoadedFunction>::new(self.load_function_no_visibility_checks(
-                            module_storage,
+                        let function = Rc::new(self.load_function_no_visibility_checks(
+                            gas_meter,
+                            traversal_context,
                             &current_frame,
                             fh_idx,
                         ).map_err(|e| self.make_call_trace_error(e))?);
                         let frame_cache = FrameTypeCache::make_rc();
                         (function, frame_cache)
                     };
+
+                    RTTCheck::check_call_visibility(
+                        &current_frame.function,
+                        &function,
+                        CallType::Regular,
+                    )
+                        .map_err(|err| set_err_info!(current_frame, err))
+                        .map_err(|e| self.make_call_trace_error(e))?;
 
                     // Charge gas
                     let module_id = function.module_id().ok_or_else(|| {
@@ -1190,11 +1239,11 @@ where
                         .map_err(|e| self.make_call_trace_error(e))?;
 
                     if function.is_native() {
-                        let _ = self.call_native::<RTTCheck, RTCaches>(
+                        let _ = self.call_native::<RTTCheck, RTRCheck, RTCaches>(
                             &mut current_frame,
-                            data_store,
+                            data_cache,
+                            function_caches,
                             resource_resolver,
-                            module_storage,
                             gas_meter,
                             traversal_context,
                             extensions,
@@ -1218,7 +1267,7 @@ where
                         fdef_idx: current_frame.function.index().0 as u16,
                         module_id: module_id.to_string(),
                         func_name: function.name().to_string(),
-                        inputs: Self::decode_move_values(module_storage, function.param_tys(), &function.ty_args, inputs),
+                        inputs: self.decode_move_values(gas_meter, traversal_context, function.param_tys(), &function.ty_args, inputs),
                         outputs: vec![],
                         type_args: vec![],
                         sub_traces: CallTraces::new(),
@@ -1230,7 +1279,7 @@ where
                         self.attach_state_if_invariant_violation(err, &current_frame)
                     }).map_err(|e| self.make_call_trace_error(e))?;
 
-                    self.set_new_call_frame::<RTTCheck, RTCaches>(
+                    self.set_new_call_frame::<RTTCheck, RTRCheck, RTCaches>(
                         &mut current_frame,
                         gas_meter,
                         function,
@@ -1263,15 +1312,15 @@ where
                                 },
                                 btree_map::Entry::Vacant(entry) => {
                                     let function =
-                                        Rc::<LoadedFunction>::new(self.load_generic_function_no_visibility_checks(
-                                            module_storage,
-                                            &current_frame,
+                                        Rc::new(self.load_generic_function_no_visibility_checks(
                                             gas_meter,
+                                            traversal_context,
+                                            &current_frame,
                                             idx,
                                         ).map_err(|e| self.make_call_trace_error(e))?);
-                                    let frame_cache =
-                                        FrameTypeCache::make_rc_for_function(&function);
-
+                                    // TODO(caches): remove the generic sub frame cache.
+                                    let frame_cache = function_caches
+                                        .get_or_create_frame_cache_generic(&function);
                                     entry.insert((Rc::clone(&function), Rc::clone(&frame_cache)));
                                     current_frame_cache.per_instruction_cache
                                         [current_frame.pc as usize] =
@@ -1284,16 +1333,23 @@ where
                             }
                         }
                     } else {
-                        let function =
-                            Rc::<LoadedFunction>::new(self.load_generic_function_no_visibility_checks(
-                                module_storage,
-                                &current_frame,
-                                gas_meter,
-                                idx,
-                            ).map_err(|e| self.make_call_trace_error(e))?);
+                        let function = Rc::new(self.load_generic_function_no_visibility_checks(
+                            gas_meter,
+                            traversal_context,
+                            &current_frame,
+                            idx,
+                        ).map_err(|e| self.make_call_trace_error(e))?);
                         let frame_cache = FrameTypeCache::make_rc();
                         (function, frame_cache)
                     };
+
+                    RTTCheck::check_call_visibility(
+                        &current_frame.function,
+                        &function,
+                        CallType::Regular,
+                    )
+                        .map_err(|err| set_err_info!(current_frame, err))
+                        .map_err(|e| self.make_call_trace_error(e))?;
 
                     // Charge gas
                     let module_id = function
@@ -1307,14 +1363,14 @@ where
                         .map_err(|e| self.make_call_trace_error(e))?;
                     gas_meter
                         .charge_call_generic(
-                            module_id,
+                            function.owner_as_module().map_err(|e| self.make_call_trace_error(e))?.self_id(),
                             function.name(),
                             function
                                 .ty_args()
                                 .iter()
                                 .map(|ty| TypeWithRuntimeEnvironment {
                                     ty,
-                                    runtime_environment: module_storage.runtime_environment(),
+                                    runtime_environment: self.loader.runtime_environment(),
                                 }),
                             self.operand_stack
                                 .last_n(function.param_tys().len())
@@ -1326,11 +1382,11 @@ where
                         .map_err(|e| self.make_call_trace_error(e))?;
 
                     if function.is_native() {
-                        let _ = self.call_native::<RTTCheck, RTCaches>(
+                        let _ = self.call_native::<RTTCheck, RTRCheck, RTCaches>(
                             &mut current_frame,
-                            data_store,
+                            data_cache,
+                            function_caches,
                             resource_resolver,
-                            module_storage,
                             gas_meter,
                             traversal_context,
                             extensions,
@@ -1356,10 +1412,10 @@ where
                         fdef_idx: current_frame.function.index().0 as u16,
                         module_id: module_id.to_string(),
                         func_name: function.name().to_string(),
-                        inputs: Self::decode_move_values(module_storage, function.param_tys(), &function.ty_args, inputs),
+                        inputs: self.decode_move_values(gas_meter, traversal_context, function.param_tys(), &function.ty_args, inputs),
                         outputs: vec![],
                         type_args: ty_args.iter().map(|ty| {
-                            TypeTagConverter::new(module_storage.runtime_environment()).ty_to_ty_tag(ty).unwrap().to_canonical_string()
+                            TypeTagConverter::new(self.loader.runtime_environment()).ty_to_ty_tag(ty).unwrap().to_canonical_string()
                         }).collect(),
                         sub_traces: CallTraces::new(),
                         gas_info: GasInfo::make_frame(u64::from(gas_meter.balance_internal())),
@@ -1370,7 +1426,7 @@ where
                         self.attach_state_if_invariant_violation(err, &current_frame)
                     }).map_err(|e| self.make_call_trace_error(e))?;
 
-                    self.set_new_call_frame::<RTTCheck, RTCaches>(
+                    self.set_new_call_frame::<RTTCheck, RTRCheck, RTCaches>(
                         &mut current_frame,
                         gas_meter,
                         function,
@@ -1393,48 +1449,35 @@ where
                         .map_err(|e| self.make_call_trace_error(e))?;
                     let mask = lazy_function.closure_mask();
 
-                    // Before trying to resolve the function, charge gas for associated
-                    // module loading.
-                    let module_id = lazy_function.with_name_and_ty_args(
-                        |module_opt, _func_name, ty_arg_tags| {
-                            let Some(module_id) = module_opt else {
-                                // TODO(#15664): currently we need the module id for gas charging
-                                //   of calls, so we can't proceed here without one. But we want
-                                //   to be able to let scripts use closures.
-                                let err = PartialVMError::new_invariant_violation(format!(
-                                    "module id required to charge gas for function `{}`",
-                                    lazy_function.to_canonical_string()
-                                ));
-                                return Err(set_err_info!(current_frame, err));
-                            };
-
-                            // Charge gas for function code loading.
-                            let arena_id = traversal_context
-                                .referenced_module_ids
-                                .alloc(module_id.clone());
-                            check_dependencies_and_charge_gas(
-                                module_storage,
-                                gas_meter,
-                                traversal_context,
-                                [(arena_id.address(), arena_id.name())],
-                            )?;
-
-                            // Charge gas for code loading of modules used by type arguments.
-                            check_type_tag_dependencies_and_charge_gas(
-                                module_storage,
-                                gas_meter,
-                                traversal_context,
-                                ty_arg_tags,
-                            )?;
-                            Ok(module_id.clone())
-                        },
-                    ).map_err(|e| self.make_call_trace_error(e))?;
+                    let module_id = lazy_function.with_name_and_ty_args(|module_id, _, _| {
+                        module_id.cloned().ok_or_else(|| {
+                            // Note:
+                            //   Module ID of a function should always exist because functions
+                            //   are defined in modules. The only way to have `None` here is
+                            //   when function is a script entrypoint. Note that in this case,
+                            //   entrypoint function cannot be packed as a closure, nor there
+                            //   can be any lambda-lifting in the script.
+                            let err = PartialVMError::new_invariant_violation(format!(
+                                "module id required to charge gas for function `{}`",
+                                lazy_function.to_canonical_string()
+                            ));
+                            set_err_info!(current_frame, err)
+                        })
+                    }).map_err(|e| self.make_call_trace_error(e))?;
 
                     // Resolve the function. This may lead to loading the code related
                     // to this function.
                     let callee = lazy_function
-                        .as_resolved(module_storage)
+                        .as_resolved(self.loader, gas_meter, traversal_context)
                         .map_err(|e| set_err_info!(current_frame, e))
+                        .map_err(|e| self.make_call_trace_error(e))?;
+
+                    RTTCheck::check_call_visibility(
+                        &current_frame.function,
+                        &callee,
+                        CallType::ClosureDynamicDispatch,
+                    )
+                        .map_err(|err| set_err_info!(current_frame, err))
                         .map_err(|e| self.make_call_trace_error(e))?;
 
                     // Charge gas for call and for the parameters. The current APIs
@@ -1460,31 +1503,24 @@ where
                         .map_err(|e| set_err_info!(current_frame, e))
                         .map_err(|e| self.make_call_trace_error(e))?;
 
-                    // In difference to regular calls, we skip visibility check.
-                    // It is possible to call a private function of another module via
-                    // a closure.
-
                     // Call function
                     if callee.is_native() {
-                        let _ = self.call_native::<RTTCheck, RTCaches>(
+                        self.call_native::<RTTCheck, RTRCheck, RTCaches>(
                             &mut current_frame,
-                            data_store,
+                            data_cache,
+                            function_caches,
                             resource_resolver,
-                            module_storage,
                             gas_meter,
                             traversal_context,
                             extensions,
                             &callee,
-                            ClosureMask::empty(),
-                            vec![],
-                        ).map_err(|e| self.call_traces.set_error(e));
+                            mask,
+                            captured_vec,
+                        ).map_err(|e| self.make_call_trace_error(e))?
                     } else {
-                        let frame_cache = if RTCaches::caches_enabled() {
-                            FrameTypeCache::make_rc_for_function(&callee)
-                        } else {
-                            FrameTypeCache::make_rc()
-                        };
-                        self.set_new_call_frame::<RTTCheck, RTCaches>(
+                        let frame_cache =
+                            function_caches.get_or_create_frame_cache::<RTCaches>(&callee);
+                        self.set_new_call_frame::<RTTCheck, RTRCheck, RTCaches>(
                             &mut current_frame,
                             gas_meter,
                             callee,
@@ -1822,41 +1858,10 @@ where
                     fdef_idx: current_frame.function.index().0 as u16,
                     module_id,
                     func_name: target_func.name().to_string(),
-                    inputs: inputs.into_iter().zip(target_func.param_tys()).map(|(value, ty)| {
-                        let (ty, value) = match ty {
-                            Type::Reference(inner) | Type::MutableReference(inner) => {
-                                let ref_value: Reference = value.cast().map_err(|_err| {
-                                    PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR).with_message(
-                                        "non reference value given for a reference typed return value".to_string(),
-                                    )
-                                })?;
-                                let inner_value = ref_value.read_ref()?;
-                                (&**inner, inner_value)
-                            },
-                            _ => (ty, value),
-                        };
-                        let layout = StorageLayoutConverter::new(
-                            module_storage,
-                        ).type_to_type_layout(ty).map_err(|_err| {
-                            PartialVMError::new(StatusCode::VERIFICATION_ERROR).with_message(
-                                "entry point functions cannot have non-serializable return types".to_string(),
-                            )
-                        })?;
-                        let annotated_layout = StorageLayoutConverter::new(
-                            module_storage,
-                        ).type_to_fully_annotated_layout(ty);
-                        match annotated_layout {
-                            Ok(a_layout) => {
-                                Ok(value.as_move_value(&layout).decorate(&a_layout))
-                            }
-                            Err(_) => {
-                                Ok(value.as_move_value(&layout))
-                            }
-                        }
-                    }).map(|v: Result<MoveValue, PartialVMError>| v.unwrap_or(MoveValue::U8(0))).collect(),
+                    inputs:  self.decode_move_values(gas_meter, traversal_context, target_func.param_tys(), &target_func.ty_args, inputs),
                     outputs: vec![],
                     type_args: ty_args.iter().map(|ty| {
-                        TypeTagConverter::new(module_storage.runtime_environment()).ty_to_ty_tag(ty).unwrap().to_canonical_string()
+                        TypeTagConverter::new(self.loader.runtime_environment()).ty_to_ty_tag(ty).unwrap().to_canonical_string()
                     }).collect(),
                     sub_traces: CallTraces::new(),
                     gas_info: GasInfo::make_frame(u64::from(gas_meter.balance_internal())),
@@ -1867,75 +1872,6 @@ where
                     self.attach_state_if_invariant_violation(err, &current_frame)
                 }).map_err(|err| err.to_partial())?;
 
-                let mut inputs = vec![];
-                for val in self.operand_stack.last_n(target_func.function.param_count()).unwrap() {
-                    inputs.push(val.copy_value());
-                }
-                let current_module_id = current_frame.function.module_id().unwrap_or(&ModuleId::new(
-                    AccountAddress::ONE,
-                    Identifier::new("script".to_string()).unwrap(),
-                )).to_string();
-                let loader = resolver.loader();
-                let module_store = resolver.module_store();
-                let module_storage = resolver.module_storage();
-                let module_id = if let Some(modId) = target_func.module_id() {
-                    modId.to_string()
-                } else {
-                    "native".to_string()
-                };
-                self.call_traces.push(InternalCallTrace {
-                    from_module_id: current_module_id,
-                    pc: current_frame.pc,
-                    fdef_idx: current_frame.function.index().0 as u16,
-                    module_id,
-                    func_name: target_func.name().to_string(),
-                    inputs: inputs.into_iter().zip(target_func.param_tys()).map(|(value, ty)| {
-                        let (ty, value) = match ty {
-                            Type::Reference(inner) | Type::MutableReference(inner) => {
-                                let ref_value: Reference = value.cast().map_err(|_err| {
-                                    PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR).with_message(
-                                        "non reference value given for a reference typed return value".to_string(),
-                                    )
-                                })?;
-                                let inner_value = ref_value.read_ref()?;
-                                (&**inner, inner_value)
-                            },
-                            _ => (ty, value),
-                        };
-                        let layout = LoaderLayoutConverter::new(
-                            loader,
-                            module_store,
-                            module_storage,
-                        ).type_to_type_layout(ty).map_err(|_err| {
-                            PartialVMError::new(StatusCode::VERIFICATION_ERROR).with_message(
-                                "entry point functions cannot have non-serializable return types".to_string(),
-                            )
-                        })?;
-                        let annotated_layout = LoaderLayoutConverter::new(
-                            loader,
-                            module_store,
-                            module_storage,
-                        ).type_to_fully_annotated_layout(ty);
-                        match annotated_layout {
-                            Ok(a_layout) => {
-                                Ok(value.as_move_value(&layout).decorate(&a_layout))
-                            }
-                            Err(_) => {
-                                Ok(value.as_move_value(&layout))
-                            }
-                        }
-                    }).map(|v: Result<MoveValue, PartialVMError>| v.unwrap_or(MoveValue::U8(0))).collect(),
-                    outputs: vec![],
-                    type_args: ty_args.iter().map(|ty| {
-                        loader.type_to_type_tag(ty, module_storage).unwrap().to_string()
-                    }).collect(),
-                    sub_traces: CallTraces::new(),
-                    error: None,
-                }).map_err(|_e| {
-                    let err = PartialVMError::new(StatusCode::ABORTED);
-                    let err = set_err_info!(current_frame, err);
-                    self.attach_state_if_invariant_violation(err, &current_frame)
-                }).map_err(|err| err.to_partial())?;
                 let frame_cache =
                     function_caches.get_or_create_frame_cache::<RTCaches>(&target_func);
                 self.set_new_call_frame::<RTTCheck, RTRCheck, RTCaches>(

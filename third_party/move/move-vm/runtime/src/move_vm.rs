@@ -159,18 +159,25 @@ impl MoveVM {
     pub fn call_trace_loaded_function(
         function: LoadedFunction,
         serialized_args: Vec<impl Borrow<[u8]>>,
-        data_store: &mut TransactionDataCache,
+        data_cache: &mut TransactionDataCache,
         gas_meter: &mut impl GasMeter,
         traversal_context: &mut TraversalContext,
         extensions: &mut NativeContextExtensions,
-        module_storage: &impl ModuleStorage,
+        loader: &impl Loader,
         resource_resolver: &impl ResourceResolver,
     ) -> Result<(CallTraces, SerializedReturnValues), CallTraceError> {
         let mut ret_call_traces = CallTraces::new();
-        let vm_config = module_storage.runtime_environment().vm_config();
-        let ty_builder = &vm_config.ty_builder;
+        let vm_config = loader.runtime_environment().vm_config();
+        let check_invariant_in_swap_loc = vm_config.check_invariant_in_swap_loc;
+
+        let function_value_extension = FunctionValueExtensionAdapter {
+            module_storage: loader.unmetered_module_storage(),
+        };
+        let layout_converter = LayoutConverter::new(loader);
+        let ty_depth_checker = TypeDepthChecker::new(loader);
 
         let create_ty_with_subst = |tys: &[Type]| -> VMResult<Vec<Type>> {
+            let ty_builder = &vm_config.ty_builder;
             tys.iter()
                 .map(|ty| ty_builder.create_ty_with_subst(ty, function.ty_args()))
                 .collect::<PartialVMResult<Vec<_>>>()
@@ -179,31 +186,45 @@ impl MoveVM {
 
         let param_tys = create_ty_with_subst(function.param_tys())
             .map_err(|e| ret_call_traces.push_error_frame(e))?;
-        let (mut dummy_locals, deserialized_args) =
-            deserialize_args(module_storage, &param_tys, serialized_args)
-                .map_err(|e| e.finish(Location::Undefined))
-                .map_err(|e| ret_call_traces.push_error_frame(e))?;
+        let (mut dummy_locals, deserialized_args) = deserialize_args(
+            &function_value_extension,
+            &layout_converter,
+            gas_meter,
+            traversal_context,
+            &param_tys,
+            serialized_args,
+            check_invariant_in_swap_loc,
+        )
+            .map_err(|err| err.finish(Location::Undefined))
+            .map_err(|e| ret_call_traces.push_error_frame(e))?;
 
         let return_tys = create_ty_with_subst(function.return_tys())
             .map_err(|e| ret_call_traces.push_error_frame(e))?;
 
-        let ret = dispatch_loader!(module_storage, loader, {
-            let ty_depth_checker = TypeDepthChecker::new(&loader);
-            Interpreter::call_trace(
-                function,
-                deserialized_args,
-                data_store,
-                module_storage,
-                &ty_depth_checker,
-                resource_resolver,
-                gas_meter,
-                traversal_context,
-                extensions,
-            )
-        });
+        let ret = Interpreter::call_trace(
+            function,
+            deserialized_args,
+            data_cache,
+            // TODO(caches): async drop
+            &mut InterpreterFunctionCaches::new(),
+            loader,
+            &ty_depth_checker,
+            &layout_converter,
+            resource_resolver,
+            gas_meter,
+            traversal_context,
+            extensions,
+        );
         if let Ok((call_traces, return_values)) = ret {
             ret_call_traces.merge(call_traces).unwrap();
-            let return_values = serialize_return_values(module_storage, &return_tys, return_values)
+            let return_values = serialize_return_values(
+                &function_value_extension,
+                &layout_converter,
+                gas_meter,
+                traversal_context,
+                &return_tys,
+                return_values,
+            )
                 .map_err(|e| e.finish(Location::Undefined))
                 .map_err(|e| ret_call_traces.push_error_frame(e))?;
             let mutable_reference_outputs = param_tys
@@ -215,9 +236,15 @@ impl MoveVM {
                 })
                 .map(|(idx, ty)| {
                     // serialize return values first in the case that a value points into this local
-                    let local_val =
-                        dummy_locals.move_loc(idx, vm_config.check_invariant_in_swap_loc)?;
-                    let (bytes, layout) = serialize_return_value(module_storage, ty, local_val)?;
+                    let local_val = dummy_locals.move_loc(idx, check_invariant_in_swap_loc)?;
+                    let (bytes, layout) = serialize_return_value(
+                        &function_value_extension,
+                        &layout_converter,
+                        gas_meter,
+                        traversal_context,
+                        ty,
+                        local_val,
+                    )?;
                     Ok((idx as LocalIndex, bytes, layout))
                 })
                 .collect::<PartialVMResult<_>>()

@@ -2575,27 +2575,23 @@ impl AptosVM {
 
         let mut session = vm.new_session(&resolver, SessionId::Void, None);
         let mut ret = match txn_payload {
-            TransactionPayload::Script(script) => {
-                let func = module_storage.load_script(script.code(), script.ty_args())?;
+            TransactionPayload::Script(serialized_script) => {
+                if !vm
+                    .features()
+                    .is_enabled(FeatureFlag::ALLOW_SERIALIZED_SCRIPT_ARGS)
+                {
+                    for arg in serialized_script.args() {
+                        if let TransactionArgument::Serialized(_) = arg {
+                            return Err(anyhow::Error::msg(PartialVMError::new(StatusCode::FEATURE_UNDER_GATING)
+                                .finish(Location::Script)
+                                .into_vm_status()));
+                        }
+                    }
+                }
+
+                // let func = module_storage.load_script(script.code(), script.ty_args())?;
                 let traversal_storage = TraversalStorage::new();
                 let mut traversal_context = TraversalContext::new(&traversal_storage);
-
-                if vm.gas_feature_version() >= RELEASE_V1_10 {
-                    check_script_dependencies_and_check_gas(
-                        &module_storage,
-                        &mut gas_meter,
-                        &mut traversal_context,
-                        script.code(),
-                    )?;
-                }
-                if vm.gas_feature_version() >= RELEASE_V1_27 {
-                    check_type_tag_dependencies_and_charge_gas(
-                        &module_storage,
-                        &mut gas_meter,
-                        &mut traversal_context,
-                        script.ty_args(),
-                    )?;
-                }
 
                 // Create SerializedSigners from txn_metadata.senders()
                 let senders_serialized: Vec<Vec<u8>> = txn_metadata
@@ -2608,38 +2604,59 @@ impl AptosVM {
                     txn_metadata.fee_payer().as_ref().map(|addr| serialized_signer(addr)),
                 );
 
-                match transaction_arg_validation::validate_combine_signer_and_txn_args_call_trace(
-                    &mut session,
-                    &module_storage,
-                    &serialized_signers,
-                    convert_txn_args(script.args()),
-                    &func,
-                    vm.features().is_enabled(FeatureFlag::STRUCT_CONSTRUCTORS),
-                ) {
-                    Ok((prologue_call_traces, args)) => {
-                        let prologue_frame = Self::make_prologue_frame(prologue_call_traces);
-                        let call_trace_res = session.call_trace_loaded_function(
-                            func,
-                            args,
-                            &mut gas_meter,
-                            &mut traversal_context,
-                            &module_storage,
-                        );
-                        let mut ret = match call_trace_res {
-                            Ok((call_traces, _)) => call_traces,
-                            Err(err) => err.call_traces
-                        };
-                        ret.prepend_call_trace(prologue_frame);
-                        Ok(ret)
+                dispatch_loader!(&module_storage, loader, {
+                    let legacy_loader_config = LegacyLoaderConfig {
+                        charge_for_dependencies: vm.gas_feature_version() >= RELEASE_V1_10,
+                        charge_for_ty_tag_dependencies: vm.gas_feature_version() >= RELEASE_V1_27,
+                    };
+                    let func = loader.load_script(
+                        &legacy_loader_config,
+                        &mut gas_meter,
+                        &mut traversal_context,
+                        serialized_script.code(),
+                        serialized_script.ty_args(),
+                    )?;
+
+                    // Check that unstable bytecode cannot be executed on mainnet and verify events.
+                    let script = func.owner_as_script()?;
+                    vm.reject_unstable_bytecode_for_script(script)?;
+                    event_validation::verify_no_event_emission_in_compiled_script(script)?;
+
+                    match transaction_arg_validation::validate_combine_signer_and_txn_args_call_trace(
+                        &mut session,
+                        &loader,
+                        &mut gas_meter,
+                        &mut traversal_context,
+                        &serialized_signers,
+                        convert_txn_args(serialized_script.args()),
+                        &func,
+                        vm.features().is_enabled(FeatureFlag::STRUCT_CONSTRUCTORS),
+                    ) {
+                        Ok((prologue_call_traces, args)) => {
+                            let prologue_frame = Self::make_prologue_frame(prologue_call_traces);
+                            let call_trace_res = session.call_trace_loaded_function(
+                                func,
+                                args,
+                                &mut gas_meter,
+                                &mut traversal_context,
+                                &loader,
+                            );
+                            let mut ret = match call_trace_res {
+                                Ok((call_traces, _)) => call_traces,
+                                Err(err) => err.call_traces
+                            };
+                            ret.prepend_call_trace(prologue_frame);
+                            Ok(ret)
+                        }
+                        Err(err) => {
+                            let prologue_call_traces = err.call_traces;
+                            let prologue_frame = Self::make_prologue_frame(prologue_call_traces);
+                            let mut ret = CallTraces::new();
+                            ret.push(prologue_frame).expect("Something went wrong");
+                            Ok(ret)
+                        }
                     }
-                    Err(err) => {
-                        let prologue_call_traces = err.call_traces;
-                        let prologue_frame = Self::make_prologue_frame(prologue_call_traces);
-                        let mut ret = CallTraces::new();
-                        ret.push(prologue_frame).expect("Something went wrong");
-                        Ok(ret)
-                    }
-                }
+                })
             }
             TransactionPayload::ModuleBundle(_) => {
                 unimplemented!()
@@ -2797,69 +2814,88 @@ impl AptosVM {
         mut session: &mut SessionExt<impl AptosMoveResolver>,
         vm: &AptosVM,
         serialized_signers: &SerializedSigners,
-        entry_func: &EntryFunction,
+        entry_fn: &EntryFunction,
         module_storage: &impl AptosModuleStorage,
         gas_meter: &mut impl AptosGasMeter,
     ) -> anyhow::Result<CallTraces> {
-        let module_id = entry_func.module().clone();
-        let func_name = entry_func.function().to_owned();
-        let type_args = entry_func.ty_args().to_vec();
-        let arguments = entry_func.args().to_vec();
+        dispatch_loader!(module_storage, loader, {
+            let legacy_loader_config = LegacyLoaderConfig {
+                charge_for_dependencies: vm.gas_feature_version() >= RELEASE_V1_10,
+                charge_for_ty_tag_dependencies: vm.gas_feature_version() >= RELEASE_V1_27,
+            };
+            let traversal_storage = TraversalStorage::new();
+            let mut traversal_context = TraversalContext::new(&traversal_storage);
 
-        let func = module_storage.load_function(&module_id, &func_name, &type_args)?;
-        let traversal_storage = TraversalStorage::new();
-        let mut traversal_context = TraversalContext::new(&traversal_storage);
+            let arguments = entry_fn.args().to_vec();
 
-        if vm.gas_feature_version() >= RELEASE_V1_10 {
-            let module_id = traversal_context
-                .referenced_module_ids
-                .alloc(entry_func.module().clone());
-            check_dependencies_and_charge_gas(module_storage, gas_meter, &mut traversal_context, [(
-                module_id.address(),
-                module_id.name(),
-            )])?;
-        }
-        if vm.gas_feature_version() >= RELEASE_V1_27 {
-            check_type_tag_dependencies_and_charge_gas(
-                module_storage,
+            let function = loader.load_instantiated_function(
+                &legacy_loader_config,
                 gas_meter,
                 &mut traversal_context,
-                entry_func.ty_args(),
+                entry_fn.module(),
+                entry_fn.function(),
+                entry_fn.ty_args(),
             )?;
-        }
 
-        match transaction_arg_validation::validate_combine_signer_and_txn_args_call_trace(
-            &mut session,
-            module_storage,
-            &serialized_signers,
-            arguments,
-            &func,
-            vm.features().is_enabled(FeatureFlag::STRUCT_CONSTRUCTORS),
-        ) {
-            Ok((prologue_call_traces, args)) => {
-                let prologue_frame = Self::make_prologue_frame(prologue_call_traces);
-                let call_trace_res = session.call_trace_loaded_function(
-                    func,
-                    args,
-                    gas_meter,
-                    &mut traversal_context,
-                    module_storage,
+            // Native entry function is forbidden.
+            if function.is_native() {
+                return Err(anyhow::Error::msg(
+                    PartialVMError::new(StatusCode::USER_DEFINED_NATIVE_NOT_ALLOWED)
+                        .with_message(
+                            "Executing user defined native entry function is not allowed"
+                                .to_string(),
+                        )
+                        .finish(Location::Module(entry_fn.module().clone()))
+                        .into_vm_status(),
+                ));
+            }
+
+            // The check below should have been feature-gated in 1.11...
+            if function.is_friend_or_private() {
+                let maybe_randomness_annotation = get_randomness_annotation_for_entry_function(
+                    entry_fn,
+                    &function.owner_as_module()?.metadata,
                 );
-                let mut ret = match call_trace_res {
-                    Ok((call_traces, _)) => call_traces,
-                    Err(err) => err.call_traces
-                };
-                ret.prepend_call_trace(prologue_frame);
-                Ok(ret)
+                if maybe_randomness_annotation.is_some() {
+                    session.mark_unbiasable();
+                }
             }
-            Err(err) => {
-                let prologue_call_traces = err.call_traces;
-                let prologue_frame = Self::make_prologue_frame(prologue_call_traces);
-                let mut ret = CallTraces::new();
-                ret.push(prologue_frame).expect("Something went wrong");
-                Ok(ret)
+
+            match transaction_arg_validation::validate_combine_signer_and_txn_args_call_trace(
+                &mut session,
+                &loader,
+                gas_meter,
+                &mut traversal_context,
+                &serialized_signers,
+                arguments,
+                &function,
+                vm.features().is_enabled(FeatureFlag::STRUCT_CONSTRUCTORS),
+            ) {
+                Ok((prologue_call_traces, args)) => {
+                    let prologue_frame = Self::make_prologue_frame(prologue_call_traces);
+                    let call_trace_res = session.call_trace_loaded_function(
+                        function,
+                        args,
+                        gas_meter,
+                        &mut traversal_context,
+                        &loader,
+                    );
+                    let mut ret = match call_trace_res {
+                        Ok((call_traces, _)) => call_traces,
+                        Err(err) => err.call_traces
+                    };
+                    ret.prepend_call_trace(prologue_frame);
+                    Ok(ret)
+                }
+                Err(err) => {
+                    let prologue_call_traces = err.call_traces;
+                    let prologue_frame = Self::make_prologue_frame(prologue_call_traces);
+                    let mut ret = CallTraces::new();
+                    ret.push(prologue_frame).expect("Something went wrong");
+                    Ok(ret)
+                }
             }
-        }
+        })
     }
 
     fn make_prologue_frame(call_traces: CallTraces) -> InternalCallTrace {

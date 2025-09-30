@@ -34,7 +34,7 @@ use serde_json::Value;
 use aptos_framework::natives::code::PackageRegistry;
 use aptos_framework::{unzip_metadata, unzip_metadata_str};
 use aptos_logger::{error, info};
-
+use aptos_types::transaction::{AuxiliaryInfo, AuxiliaryInfoTrait};
 use aptos_vm::transaction_metadata::TransactionMetadata;
 use move_binary_format::{errors::VMError, file_format::{CodeOffset, FunctionDefinitionIndex, TableIndex}};
 use move_bytecode_source_map::source_map::SourceMap;
@@ -221,7 +221,8 @@ impl SyncAptosTracer {
         let state_view = SyncTracerView::new(self.debugger.clone(), Version::from(txn_data.version - 1));
         let call_traces = match txn {
             Transaction::UserTransaction(user_txn) => {
-                let txn_metadata = TransactionMetadata::new(&user_txn);
+                let auxiliary_info = AuxiliaryInfo::new_empty();
+                let txn_metadata = TransactionMetadata::new(&user_txn, &auxiliary_info);
                 let call_trace = AptosVM::get_call_trace(
                     &state_view,
                     user_txn.payload(),

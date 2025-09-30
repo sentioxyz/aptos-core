@@ -191,7 +191,9 @@ pub(crate) fn validate_combine_signer_and_txn_args(
 
 pub(crate) fn validate_combine_signer_and_txn_args_call_trace(
     session: &mut SessionExt<impl AptosMoveResolver>,
-    module_storage: &impl ModuleStorage,
+    loader: &impl Loader,
+    gas_meter: &mut impl GasMeter,
+    traversal_context: &mut TraversalContext,
     serialized_signers: &SerializedSigners,
     args: Vec<Vec<u8>>,
     func: &LoadedFunction,
@@ -216,7 +218,7 @@ pub(crate) fn validate_combine_signer_and_txn_args_call_trace(
     }
 
     let allowed_structs = get_allowed_structs(are_struct_constructors_enabled);
-    let ty_builder = &module_storage.runtime_environment().vm_config().ty_builder;
+    let ty_builder = &loader.runtime_environment().vm_config().ty_builder;
 
     // Need to keep this here to ensure we return the historic correct error code for replay
     for ty in func.param_tys()[signer_param_cnt..].iter() {
@@ -224,7 +226,7 @@ pub(crate) fn validate_combine_signer_and_txn_args_call_trace(
         let ty = subst_res
             .map_err(|e| e.finish(Location::Undefined).into_vm_status())
             .map_err(|e| ret_call_traces.push_error_frame_from_vm_status(e))?;
-        let valid = is_valid_txn_arg(module_storage.runtime_environment(), &ty, allowed_structs);
+        let valid = is_valid_txn_arg(loader.runtime_environment(), &ty, allowed_structs);
         if !valid {
             return Err(ret_call_traces.push_error_frame_from_vm_status(VMStatus::error(
                 StatusCode::INVALID_MAIN_FUNCTION_SIGNATURE,
@@ -257,7 +259,9 @@ pub(crate) fn validate_combine_signer_and_txn_args_call_trace(
     // FAILED_TO_DESERIALIZE_ARGUMENT error.
     let (call_traces, args) = construct_args_call_trace(
         session,
-        module_storage,
+        loader,
+        gas_meter,
+        traversal_context,
         &func.param_tys()[signer_param_cnt..],
         args,
         func.ty_args(),
@@ -349,7 +353,9 @@ pub(crate) fn construct_args(
 
 pub(crate) fn construct_args_call_trace(
     session: &mut SessionExt<impl AptosMoveResolver>,
-    module_storage: &impl ModuleStorage,
+    loader: &impl Loader,
+    gas_meter: &mut impl GasMeter,
+    traversal_context: &mut TraversalContext,
     types: &[Type],
     args: Vec<Vec<u8>>,
     ty_args: &[Type],
@@ -358,13 +364,12 @@ pub(crate) fn construct_args_call_trace(
 ) -> Result<(CallTraces, Vec<Vec<u8>>), CallTraceError> {
     let mut ret_call_traces = CallTraces::new();
     // Perhaps in a future we should do proper gas metering here
-    let mut gas_meter = UnmeteredGasMeter;
     let mut res_args = vec![];
     if types.len() != args.len() {
         return Err(ret_call_traces.push_error_frame_from_vm_status(invalid_signature()));
     }
 
-    let ty_builder = &module_storage.runtime_environment().vm_config().ty_builder;
+    let ty_builder = &loader.runtime_environment().vm_config().ty_builder;
     for (ty, arg) in types.iter().zip(args) {
         let subst_res = ty_builder.create_ty_with_subst(ty, ty_args);
         let ty = subst_res
@@ -372,11 +377,12 @@ pub(crate) fn construct_args_call_trace(
             .map_err(|e| ret_call_traces.push_error_frame_from_vm_status(e))?;
         let (call_traces, arg) = construct_arg_call_trace(
             session,
-            module_storage,
+            loader,
+            gas_meter,
+            traversal_context,
             &ty,
             allowed_structs,
             arg,
-            &mut gas_meter,
             is_view,
         ).map_err(|e| ret_call_traces.merge_error(e))?;
         ret_call_traces.merge(call_traces).unwrap();
@@ -446,11 +452,12 @@ fn construct_arg(
 
 fn construct_arg_call_trace(
     session: &mut SessionExt<impl AptosMoveResolver>,
-    module_storage: &impl ModuleStorage,
+    loader: &impl Loader,
+    gas_meter: &mut impl GasMeter,
+    traversal_context: &mut TraversalContext,
     ty: &Type,
     allowed_structs: &ConstructorMap,
     arg: Vec<u8>,
-    gas_meter: &mut impl GasMeter,
     is_view: bool,
 ) -> Result<(CallTraces, Vec<u8>), CallTraceError> {
     let mut ret_call_traces = CallTraces::new();
@@ -464,12 +471,13 @@ fn construct_arg_call_trace(
             let mut max_invocations = 10; // Read from config in the future
             let call_traces = recursively_construct_arg_call_trace(
                 session,
-                module_storage,
+                loader,
+                gas_meter,
+                traversal_context,
                 ty,
                 allowed_structs,
                 &mut cursor,
                 initial_cursor_len,
-                gas_meter,
                 &mut max_invocations,
                 &mut new_arg,
             ).map_err(|e| ret_call_traces.merge_error(e))?;
@@ -581,12 +589,13 @@ pub(crate) fn recursively_construct_arg(
 
 pub(crate) fn recursively_construct_arg_call_trace(
     session: &mut SessionExt<impl AptosMoveResolver>,
-    module_storage: &impl ModuleStorage,
+    loader: &impl Loader,
+    gas_meter: &mut impl GasMeter,
+    traversal_context: &mut TraversalContext,
     ty: &Type,
     allowed_structs: &ConstructorMap,
     cursor: &mut Cursor<&[u8]>,
     initial_cursor_len: usize,
-    gas_meter: &mut impl GasMeter,
     max_invocations: &mut u64,
     arg: &mut Vec<u8>,
 ) -> Result<CallTraces, CallTraceError> {
@@ -601,12 +610,13 @@ pub(crate) fn recursively_construct_arg_call_trace(
             while len > 0 {
                 let call_traces = recursively_construct_arg_call_trace(
                     session,
-                    module_storage,
+                    loader,
+                    gas_meter,
+                    traversal_context,
                     inner,
                     allowed_structs,
                     cursor,
                     initial_cursor_len,
-                    gas_meter,
                     max_invocations,
                     arg,
                 ).map_err(|e| ret_call_traces.merge_error(e))?;
@@ -615,7 +625,7 @@ pub(crate) fn recursively_construct_arg_call_trace(
             }
         },
         Struct { .. } | StructInstantiation { .. } => {
-            let (module_id, identifier) = module_storage
+            let (module_id, identifier) = loader
                 .runtime_environment()
                 .get_struct_name(ty)
                 .map_err(|_| {
@@ -635,13 +645,14 @@ pub(crate) fn recursively_construct_arg_call_trace(
             // of the argument.
             let (call_traces, mut val) = validate_and_construct_call_trace(
                 session,
-                module_storage,
+                loader,
+                gas_meter,
+                traversal_context,
                 ty,
                 constructor,
                 allowed_structs,
                 cursor,
                 initial_cursor_len,
-                gas_meter,
                 max_invocations,
             ).map_err(|e| ret_call_traces.merge_error(e))?;
             ret_call_traces.merge(call_traces).unwrap();
@@ -773,13 +784,14 @@ fn validate_and_construct(
 
 fn validate_and_construct_call_trace(
     session: &mut SessionExt<impl AptosMoveResolver>,
-    module_storage: &impl ModuleStorage,
+    loader: &impl Loader,
+    gas_meter: &mut impl GasMeter,
+    traversal_context: &mut TraversalContext,
     expected_type: &Type,
     constructor: &FunctionId,
     allowed_structs: &ConstructorMap,
     cursor: &mut Cursor<&[u8]>,
     initial_cursor_len: usize,
-    gas_meter: &mut impl GasMeter,
     max_invocations: &mut u64,
 ) -> Result<(CallTraces, Vec<u8>), CallTraceError> {
     let mut ret_call_traces = CallTraces::new();
@@ -835,13 +847,15 @@ fn validate_and_construct_call_trace(
     }
 
     let function = load_constructor_function(
-        module_storage,
+        loader,
+        gas_meter,
+        traversal_context,
         &constructor.module_id,
         constructor.func_name,
         expected_type,
     ).map_err(|e| ret_call_traces.push_error_frame(e))?;
     let mut args = vec![];
-    let ty_builder = &module_storage.runtime_environment().vm_config().ty_builder;
+    let ty_builder = &loader.runtime_environment().vm_config().ty_builder;
     for param_ty in function.param_tys() {
         let mut arg = vec![];
         let arg_ty = ty_builder
@@ -850,25 +864,25 @@ fn validate_and_construct_call_trace(
 
         let call_traces = recursively_construct_arg_call_trace(
             session,
-            module_storage,
+            loader,
+            gas_meter,
+            traversal_context,
             &arg_ty,
             allowed_structs,
             cursor,
             initial_cursor_len,
-            gas_meter,
             max_invocations,
             &mut arg,
         ).map_err(|e| ret_call_traces.merge_error(e))?;
         ret_call_traces.merge(call_traces).unwrap();
         args.push(arg);
     }
-    let storage = TraversalStorage::new();
-    let (mut call_traces, serialized_result) = session.call_trace_loaded_function(
+    let (call_traces, serialized_result) = session.call_trace_loaded_function(
         function,
         args,
         gas_meter,
-        &mut TraversalContext::new(&storage),
-        module_storage,
+        traversal_context,
+        loader,
     )?;
     ret_call_traces.merge(call_traces).unwrap();
     let mut ret_vals = serialized_result.return_values;
