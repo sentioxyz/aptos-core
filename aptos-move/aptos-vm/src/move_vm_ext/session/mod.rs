@@ -54,7 +54,7 @@ use move_vm_types::{
 };
 use std::{borrow::Borrow, collections::BTreeMap};
 use aptos_gas_meter::AptosGasMeter;
-use move_binary_format::call_trace::CallTraces;
+use move_binary_format::call_trace::{CallTraceError, CallTraces};
 use triomphe::Arc as TriompheArc;
 
 pub mod respawned_session;
@@ -166,7 +166,7 @@ where
         args: Vec<impl Borrow<[u8]>>,
         gas_meter: &mut impl GasMeter,
         traversal_context: &mut TraversalContext,
-        module_storage: &impl ModuleStorage,
+        loader: &impl Loader,
     ) -> Result<(CallTraces, SerializedReturnValues), CallTraceError> {
         MoveVM::call_trace_loaded_function(
             func,
@@ -175,7 +175,7 @@ where
             gas_meter,
             traversal_context,
             &mut self.extensions,
-            module_storage,
+            loader,
             self.resolver,
         )
     }
