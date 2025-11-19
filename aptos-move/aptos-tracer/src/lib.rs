@@ -225,7 +225,7 @@ impl SyncAptosTracer {
                 let txn_metadata = TransactionMetadata::new(&user_txn, &auxiliary_info);
                 let call_trace = AptosVM::get_call_trace(
                     &state_view,
-                    user_txn.payload(),
+                    &user_txn,
                     &txn_metadata,
                     user_txn.max_gas_amount(),
                 ).map_err(|err| {

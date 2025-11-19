@@ -34,6 +34,12 @@ pub fn move_value_to_json(val: MoveValue) -> Value {
         MoveValue::U16(n) => serde_json::to_value(n).unwrap(),
         MoveValue::U32(n) => serde_json::to_value(n).unwrap(),
         MoveValue::U256(n) => serde_json::to_value(n.to_string()).unwrap(),
+        MoveValue::I8(n) => serde_json::to_value(n).unwrap(),
+        MoveValue::I16(n) => serde_json::to_value(n).unwrap(),
+        MoveValue::I32(n) => serde_json::to_value(n).unwrap(),
+        MoveValue::I64(n) => serde_json::to_value(n.to_string()).unwrap(),
+        MoveValue::I128(n) => serde_json::to_value(n.to_string()).unwrap(),
+        MoveValue::I256(n) => serde_json::to_value(n.to_string()).unwrap(),
         MoveValue::Closure(_) => Value::Null,
     }
 }

@@ -167,16 +167,17 @@ where
         gas_meter: &mut impl GasMeter,
         traversal_context: &mut TraversalContext,
         loader: &impl Loader,
+        trace_recorder: &mut impl TraceRecorder,
     ) -> Result<(CallTraces, SerializedReturnValues), CallTraceError> {
         MoveVM::call_trace_loaded_function(
             func,
             args,
-            &mut self.data_cache,
+            &mut MoveVmDataCacheAdapter::new(&mut self.data_cache, self.resolver, loader),
             gas_meter,
             traversal_context,
             &mut self.extensions,
             loader,
-            self.resolver,
+            trace_recorder,
         )
     }
 
