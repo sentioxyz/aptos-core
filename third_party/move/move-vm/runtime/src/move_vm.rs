@@ -178,16 +178,15 @@ impl MoveVM {
     pub fn call_trace_loaded_function(
         function: LoadedFunction,
         serialized_args: Vec<impl Borrow<[u8]>>,
-        data_cache: &mut TransactionDataCache,
+        data_cache: &mut impl MoveVmDataCache,
         gas_meter: &mut impl GasMeter,
         traversal_context: &mut TraversalContext,
         extensions: &mut NativeContextExtensions,
         loader: &impl Loader,
-        resource_resolver: &impl ResourceResolver,
+        trace_recorder: &mut impl TraceRecorder,
     ) -> Result<(CallTraces, SerializedReturnValues), CallTraceError> {
         let mut ret_call_traces = CallTraces::new();
         let vm_config = loader.runtime_environment().vm_config();
-        let check_invariant_in_swap_loc = vm_config.check_invariant_in_swap_loc;
 
         let function_value_extension = FunctionValueExtensionAdapter {
             module_storage: loader.unmetered_module_storage(),
@@ -212,7 +211,6 @@ impl MoveVM {
             traversal_context,
             &param_tys,
             serialized_args,
-            check_invariant_in_swap_loc,
         )
             .map_err(|err| err.finish(Location::Undefined))
             .map_err(|e| ret_call_traces.push_error_frame(e))?;
@@ -229,10 +227,10 @@ impl MoveVM {
             loader,
             &ty_depth_checker,
             &layout_converter,
-            resource_resolver,
             gas_meter,
             traversal_context,
             extensions,
+            trace_recorder,
         );
         if let Ok((call_traces, return_values)) = ret {
             ret_call_traces.merge(call_traces).unwrap();
@@ -255,7 +253,7 @@ impl MoveVM {
                 })
                 .map(|(idx, ty)| {
                     // serialize return values first in the case that a value points into this local
-                    let local_val = dummy_locals.move_loc(idx, check_invariant_in_swap_loc)?;
+                    let local_val = dummy_locals.move_loc(idx)?;
                     let (bytes, layout) = serialize_return_value(
                         &function_value_extension,
                         &layout_converter,

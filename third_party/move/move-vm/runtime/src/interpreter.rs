@@ -72,6 +72,7 @@ use std::error::Error;
 use move_binary_format::call_trace::{InternalCallTrace, CallTraces, GasInfo, CallTraceError};
 use move_core_types::value::MoveValue;
 use move_vm_types::gas::DependencyGasMeter;
+use move_vm_types::values::DEFAULT_MAX_VM_VALUE_NESTED_DEPTH;
 
 /// A category of information which can be traced by the interpreter.
 #[derive(Debug, Clone, PartialOrd, Ord, PartialEq, Eq)]
@@ -217,15 +218,15 @@ impl Interpreter {
     pub(crate) fn call_trace<LoaderImpl>(
         function: LoadedFunction,
         args: Vec<Value>,
-        data_cache: &mut TransactionDataCache,
+        data_cache: &mut impl MoveVmDataCache,
         function_caches: &mut InterpreterFunctionCaches,
         loader: &LoaderImpl,
         ty_depth_checker: &TypeDepthChecker<LoaderImpl>,
         layout_converter: &LayoutConverter<LoaderImpl>,
-        resource_resolver: &impl ResourceResolver,
         gas_meter: &mut impl GasMeter,
         traversal_context: &mut TraversalContext,
         extensions: &mut NativeContextExtensions,
+        trace_logeer: &mut impl TraceRecorder,
     ) -> Result<(CallTraces, Vec<Value>), CallTraceError>
     where
         LoaderImpl: Loader,
@@ -238,10 +239,10 @@ impl Interpreter {
             loader,
             ty_depth_checker,
             layout_converter,
-            resource_resolver,
             gas_meter,
             traversal_context,
             extensions,
+            trace_logeer,
         )
     }
 }
@@ -366,6 +367,58 @@ where
             )
             .map_err(|e| self.set_location(e))?;
         Ok(function)
+    }
+
+    pub(crate) fn call_trace(
+        function: LoadedFunction,
+        args: Vec<Value>,
+        data_cache: &mut impl MoveVmDataCache,
+        function_caches: &mut InterpreterFunctionCaches,
+        loader: &LoaderImpl,
+        ty_depth_checker: &TypeDepthChecker<LoaderImpl>,
+        layout_converter: &LayoutConverter<LoaderImpl>,
+        gas_meter: &mut impl GasMeter,
+        traversal_context: &mut TraversalContext,
+        extensions: &mut NativeContextExtensions,
+        trace_recorder: &mut impl TraceRecorder,
+    ) -> Result<(CallTraces, Vec<Value>), CallTraceError> {
+        let interpreter = InterpreterImpl {
+            operand_stack: Stack::new(),
+            call_stack: CallStack::new(),
+            vm_config: loader.runtime_environment().vm_config(),
+            ty_pool: loader.runtime_environment().ty_pool(),
+            access_control: AccessControlState::default(),
+            reentrancy_checker: ReentrancyChecker::default(),
+            loader,
+            ty_depth_checker,
+            layout_converter,
+            ref_state: RefCheckState::new(),
+            call_traces: CallTraces::new(),
+        };
+
+        let function = Rc::new(function);
+        interpreter.call_trace_internal::<NoRuntimeTypeCheck, NoRuntimeRefCheck>(
+            data_cache,
+            function_caches,
+            gas_meter,
+            traversal_context,
+            extensions,
+            trace_recorder,
+            function,
+            args,
+        ).map_err(|CallTraceError { call_traces, vm_error }| {
+            let mut call_traces = call_traces.clone();
+            if call_traces.len() == 0 {
+                panic!("call traces len = 0")
+            }
+            call_traces.set_error(vm_error.clone());
+            while call_traces.len() > 1 {
+                let top_call = call_traces.pop().unwrap();
+                call_traces.push_call_trace(top_call);
+                call_traces.set_error(vm_error.clone());
+            }
+            CallTraceError { call_traces, vm_error }
+        })
     }
 
     /// Main loop for the execution of a function.
@@ -953,14 +1006,14 @@ where
         }).map(|v: Result<MoveValue, PartialVMError>| v.unwrap_or(MoveValue::U8(0))).collect()
     }
 
-    fn call_trace_internal<RTTCheck: RuntimeTypeCheck, RTRCheck: RuntimeRefCheck, RTCaches: RuntimeCacheTraits>(
+    fn call_trace_internal<RTTCheck: RuntimeTypeCheck, RTRCheck: RuntimeRefCheck>(
         mut self,
-        data_cache: &mut TransactionDataCache,
+        data_cache: &mut impl MoveVmDataCache,
         function_caches: &mut InterpreterFunctionCaches,
-        resource_resolver: &impl ResourceResolver,
         gas_meter: &mut impl GasMeter,
         traversal_context: &mut TraversalContext,
         extensions: &mut NativeContextExtensions,
+        trace_recorder: &mut impl TraceRecorder,
         function: Rc<LoadedFunction>,
         args: Vec<Value>,
     ) -> Result<(CallTraces, Vec<Value>), CallTraceError> {
@@ -971,9 +1024,7 @@ where
             locals
                 .store_loc(
                     i,
-                    value.copy_value(),
-                    self.vm_config
-                        .check_invariant_in_swap_loc,
+                    value.copy_value(1, Some(DEFAULT_MAX_VM_VALUE_NESTED_DEPTH)).unwrap(),
                 )
                 .map_err(|e| self.set_location(e))
                 .map_err(|e| self.make_call_trace_error(e))?;
@@ -1035,75 +1086,27 @@ where
 
         loop {
             let exit_code = current_frame
-                .execute_code::<RTTCheck, RTRCheck, RTCaches>(
+                .execute_code::<RTTCheck, RTRCheck>(
                     &mut self,
                     data_cache,
-                    resource_resolver,
                     gas_meter,
                     traversal_context,
+                    trace_recorder,
                 )
                 .map_err(|err| self.attach_state_if_invariant_violation(err, &current_frame));
             match exit_code {
                 Ok(ExitCode::Return) => {
-                    let non_ref_vals = current_frame
-                        .locals
-                        .drop_all_values()
-                        .map(|(_idx, val)| val)
-                        .collect::<Vec<_>>();
+                    let non_ref_vals = current_frame.locals.drop_all_values();
 
                     gas_meter
                         .charge_drop_frame(non_ref_vals.iter())
                         .map_err(|e| self.set_location(e))
                         .map_err(|e| self.make_call_trace_error(e))?;
-                    // If the returning function has runtime checks on, the return types
-                    // will be on the caller stack.
-                    let caller_has_rt_checks = self
-                        .call_stack
-                        .0
-                        .last()
-                        .map(|f| RTTCheck::should_perform_checks(&f.function.function))
-                        .unwrap_or(false);
-                    let callee_has_rt_checks =
-                        RTTCheck::should_perform_checks(&current_frame.function.function);
-                    if callee_has_rt_checks {
-                        self.check_return_tys::<RTTCheck>(&mut current_frame)
-                            .map_err(|e| set_err_info!(current_frame, e))
-                            .map_err(|e| self.make_call_trace_error(e))?;
-                        if !caller_has_rt_checks {
-                            // The callee has pushed return types, but they aren't used by
-                            // the caller, so need to be removed.
-                            self.operand_stack
-                                .remove_tys(current_frame.function.return_tys().len())
-                                .map_err(|e| set_err_info!(current_frame, e))
-                                .map_err(|e| self.make_call_trace_error(e))?;
-                        }
-                    } else if caller_has_rt_checks {
-                        // We are not runtime checking this function, but in the caller,
-                        // so we must push the return types of the function onto the type stack,
-                        // following the runtime type checking protocol.
-                        let ty_args = current_frame.function.ty_args();
-                        if ty_args.is_empty() {
-                            for ret_ty in current_frame.function.return_tys() {
-                                self.operand_stack
-                                    .push_ty(ret_ty.clone())
-                                    .map_err(|e| set_err_info!(current_frame, e))
-                                    .map_err(|e| self.make_call_trace_error(e))?;
-                            }
-                        } else {
-                            for ret_ty in current_frame.function.return_tys() {
-                                let ret_ty = current_frame
-                                    .ty_builder()
-                                    .create_ty_with_subst(ret_ty, ty_args)
-                                    .map_err(|e| set_err_info!(current_frame, e))
-                                    .map_err(|e| self.make_call_trace_error(e))?;
-                                self.operand_stack
-                                    .push_ty(ret_ty)
-                                    .map_err(|e| set_err_info!(current_frame, e))
-                                    .map_err(|e| self.make_call_trace_error(e))?;
-                            }
-                        }
-                    }
 
+                    self.call_stack
+                        .type_check_return::<RTTCheck>(&mut self.operand_stack, &mut current_frame)
+                        .map_err(|e| self.set_location(e))
+                        .map_err(|e| self.make_call_trace_error(e))?;
                     self.access_control
                         .exit_function(&current_frame.function)
                         .map_err(|e| self.set_location(e))
@@ -1111,7 +1114,7 @@ where
 
                     let mut outputs = vec![];
                     for val in self.operand_stack.last_n(current_frame.function.return_tys().len()).unwrap() {
-                        outputs.push(val.copy_value());
+                        outputs.push(val.copy_value(1, Some(DEFAULT_MAX_VM_VALUE_NESTED_DEPTH)).unwrap());
                     }
                     self.call_traces.set_outputs(
                         self.decode_move_values(gas_meter, traversal_context, current_frame.function.return_tys(), &current_frame.function.ty_args, outputs));
@@ -1136,7 +1139,7 @@ where
                     }
                 },
                 Ok(ExitCode::Call(fh_idx)) => {
-                    let (function, frame_cache) = if RTCaches::caches_enabled() {
+                    let (function, frame_cache) = if self.vm_config.enable_function_caches {
                         let current_frame_cache = &mut *current_frame.frame_cache.borrow_mut();
 
                         if let PerInstructionCache::Call(ref function, ref frame_cache) =
@@ -1202,11 +1205,10 @@ where
                         .map_err(|e| self.make_call_trace_error(e))?;
 
                     if function.is_native() {
-                        let _ = self.call_native::<RTTCheck, RTRCheck, RTCaches>(
+                        let _ = self.call_native::<RTTCheck, RTRCheck>(
                             &mut current_frame,
                             data_cache,
                             function_caches,
-                            resource_resolver,
                             gas_meter,
                             traversal_context,
                             extensions,
@@ -1218,7 +1220,7 @@ where
                     }
                     let mut inputs = vec![];
                     for val in self.operand_stack.last_n(function.function.param_count()).unwrap() {
-                        inputs.push(val.copy_value());
+                        inputs.push(val.copy_value(1, Some(DEFAULT_MAX_VM_VALUE_NESTED_DEPTH)).unwrap());
                     }
                     current_module_id = current_frame.function.module_id().unwrap_or(&ModuleId::new(
                         AccountAddress::ONE,
@@ -1242,7 +1244,7 @@ where
                         self.attach_state_if_invariant_violation(err, &current_frame)
                     }).map_err(|e| self.make_call_trace_error(e))?;
 
-                    self.set_new_call_frame::<RTTCheck, RTRCheck, RTCaches>(
+                    self.set_new_call_frame::<RTTCheck, RTRCheck>(
                         &mut current_frame,
                         gas_meter,
                         function,
@@ -1253,7 +1255,7 @@ where
                     ).map_err(|e| self.make_call_trace_error(e))?;
                 },
                 Ok(ExitCode::CallGeneric(idx)) => {
-                    let (function, frame_cache) = if RTCaches::caches_enabled() {
+                    let (function, frame_cache) = if self.vm_config.enable_function_caches {
                         let current_frame_cache = &mut *current_frame.frame_cache.borrow_mut();
 
                         if let PerInstructionCache::CallGeneric(ref function, ref frame_cache) =
@@ -1261,39 +1263,30 @@ where
                         {
                             (Rc::clone(function), Rc::clone(frame_cache))
                         } else {
-                            match current_frame_cache.generic_sub_frame_cache.entry(idx) {
-                                btree_map::Entry::Occupied(entry) => {
-                                    let entry = entry.get();
-                                    current_frame_cache.per_instruction_cache
-                                        [current_frame.pc as usize] =
-                                        PerInstructionCache::CallGeneric(
-                                            Rc::clone(&entry.0),
-                                            Rc::clone(&entry.1),
+                            let (function, frame_cache) =
+                                match current_frame_cache.generic_function_cache.entry(idx) {
+                                    Entry::Vacant(e) => {
+                                        let function = Rc::new(
+                                            self.load_generic_function_no_visibility_checks(
+                                                gas_meter,
+                                                traversal_context,
+                                                &current_frame,
+                                                idx,
+                                            ).map_err(|e| self.make_call_trace_error(e))?,
                                         );
-
-                                    (Rc::clone(&entry.0), Rc::clone(&entry.1))
-                                },
-                                btree_map::Entry::Vacant(entry) => {
-                                    let function =
-                                        Rc::new(self.load_generic_function_no_visibility_checks(
-                                            gas_meter,
-                                            traversal_context,
-                                            &current_frame,
-                                            idx,
-                                        ).map_err(|e| self.make_call_trace_error(e))?);
-                                    // TODO(caches): remove the generic sub frame cache.
-                                    let frame_cache = function_caches
-                                        .get_or_create_frame_cache_generic(&function);
-                                    entry.insert((Rc::clone(&function), Rc::clone(&frame_cache)));
-                                    current_frame_cache.per_instruction_cache
-                                        [current_frame.pc as usize] =
-                                        PerInstructionCache::CallGeneric(
-                                            Rc::clone(&function),
-                                            Rc::clone(&frame_cache),
-                                        );
-                                    (function, frame_cache)
-                                },
-                            }
+                                        let frame_cache = function_caches
+                                            .get_or_create_frame_cache_generic(&function);
+                                        e.insert((function.clone(), frame_cache.clone()));
+                                        (function, frame_cache)
+                                    },
+                                    Entry::Occupied(e) => e.into_mut().clone(),
+                                };
+                            current_frame_cache.per_instruction_cache[current_frame.pc as usize] =
+                                PerInstructionCache::CallGeneric(
+                                    Rc::clone(&function),
+                                    Rc::clone(&frame_cache),
+                                );
+                            (function, frame_cache)
                         }
                     } else {
                         let function = Rc::new(self.load_generic_function_no_visibility_checks(
@@ -1345,11 +1338,10 @@ where
                         .map_err(|e| self.make_call_trace_error(e))?;
 
                     if function.is_native() {
-                        let _ = self.call_native::<RTTCheck, RTRCheck, RTCaches>(
+                        let _ = self.call_native::<RTTCheck, RTRCheck>(
                             &mut current_frame,
                             data_cache,
                             function_caches,
-                            resource_resolver,
                             gas_meter,
                             traversal_context,
                             extensions,
@@ -1363,7 +1355,7 @@ where
                     let ty_args = function.ty_args().to_vec();
                     let mut inputs = vec![];
                     for val in self.operand_stack.last_n(function.function.param_count()).unwrap() {
-                        inputs.push(val.copy_value());
+                        inputs.push(val.copy_value(1, Some(DEFAULT_MAX_VM_VALUE_NESTED_DEPTH)).unwrap());
                     }
                     current_module_id = current_frame.function.module_id().unwrap_or(&ModuleId::new(
                         AccountAddress::ONE,
@@ -1389,7 +1381,7 @@ where
                         self.attach_state_if_invariant_violation(err, &current_frame)
                     }).map_err(|e| self.make_call_trace_error(e))?;
 
-                    self.set_new_call_frame::<RTTCheck, RTRCheck, RTCaches>(
+                    self.set_new_call_frame::<RTTCheck, RTRCheck>(
                         &mut current_frame,
                         gas_meter,
                         function,
@@ -1468,22 +1460,21 @@ where
 
                     // Call function
                     if callee.is_native() {
-                        self.call_native::<RTTCheck, RTRCheck, RTCaches>(
+                        self.call_native::<RTTCheck, RTRCheck>(
                             &mut current_frame,
                             data_cache,
                             function_caches,
-                            resource_resolver,
                             gas_meter,
                             traversal_context,
                             extensions,
                             &callee,
                             mask,
                             captured_vec,
-                        ).map_err(|e| self.make_call_trace_error(e))?
+                        ).map_err(|e| self.make_call_trace_error(e))?;
                     } else {
                         let frame_cache =
-                            function_caches.get_or_create_frame_cache::<RTCaches>(&callee);
-                        self.set_new_call_frame::<RTTCheck, RTRCheck, RTCaches>(
+                            function_caches.get_or_create_frame_cache(&callee);
+                        self.set_new_call_frame::<RTTCheck, RTRCheck>(
                             &mut current_frame,
                             gas_meter,
                             callee,
@@ -1492,7 +1483,7 @@ where
                             frame_cache,
                             mask,
                             captured_vec,
-                        ).map_err(|e| self.make_call_trace_error(e))?
+                        ).map_err(|e| self.make_call_trace_error(e))?;
                     }
                 },
                 Err(err) => {
@@ -1793,7 +1784,7 @@ where
 
                 let mut inputs = vec![];
                 for val in self.operand_stack.last_n(target_func.function.param_count()).unwrap() {
-                    inputs.push(val.copy_value());
+                    inputs.push(val.copy_value(1, Some(DEFAULT_MAX_VM_VALUE_NESTED_DEPTH)).unwrap());
                 }
                 let current_module_id = current_frame.function.module_id().unwrap_or(&ModuleId::new(
                     AccountAddress::ONE,

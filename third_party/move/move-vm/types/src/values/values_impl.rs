@@ -545,7 +545,7 @@ impl Value {
     // Note(inline): recursive function, but `#[cfg_attr(feature = "force-inline", inline(always))]` seems to improve perf slightly
     //               and doesn't add much compile time.
     #[inline(always)]
-    fn copy_value(&self, depth: u64, max_depth: Option<u64>) -> PartialVMResult<Self> {
+    pub fn copy_value(&self, depth: u64, max_depth: Option<u64>) -> PartialVMResult<Self> {
         use Value::*;
 
         check_depth(depth, max_depth)?;

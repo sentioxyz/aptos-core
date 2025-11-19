@@ -34,7 +34,7 @@ use std::{
     io::{Cursor, Read},
 };
 use move_binary_format::call_trace::{CallTraceError, CallTraces};
-use move_vm_types::loaded_data::runtime_types::Type::{Address, Bool, Signer, U128, U16, U256, U32, U64, U8};
+use move_vm_types::loaded_data::runtime_types::Type::{Address, Bool, Signer, I128, I16, I256, I32, I64, I8, U128, U16, U256, U32, U64, U8};
 
 pub(crate) struct FunctionId {
     module_id: ModuleId,
@@ -465,7 +465,8 @@ fn construct_arg_call_trace(
     let mut ret_call_traces = CallTraces::new();
     use move_vm_types::loaded_data::runtime_types::Type::*;
     match ty {
-        Bool | U8 | U16 | U32 | U64 | U128 | U256 | Address => Ok((ret_call_traces, arg)),
+        Bool | U8 | U16 | U32 | U64 | U128 | U256 | I8 | I16 | I32 | I64 | I128 | I256
+        | Address => Ok((ret_call_traces, arg)),
         Vector(_) | Struct { .. } | StructInstantiation { .. } => {
             let initial_cursor_len = arg.len();
             let mut cursor = Cursor::new(&arg[..]);
@@ -660,12 +661,12 @@ pub(crate) fn recursively_construct_arg_call_trace(
             ret_call_traces.merge(call_traces).unwrap();
             arg.append(&mut val);
         },
-        Bool | U8 => read_n_bytes(1, cursor, arg).map_err(|e| ret_call_traces.push_error_frame_from_vm_status(e))?,
-        U16 => read_n_bytes(2, cursor, arg).map_err(|e| ret_call_traces.push_error_frame_from_vm_status(e))?,
-        U32 => read_n_bytes(4, cursor, arg).map_err(|e| ret_call_traces.push_error_frame_from_vm_status(e))?,
-        U64 => read_n_bytes(8, cursor, arg).map_err(|e| ret_call_traces.push_error_frame_from_vm_status(e))?,
-        U128 => read_n_bytes(16, cursor, arg).map_err(|e| ret_call_traces.push_error_frame_from_vm_status(e))?,
-        U256 | Address => read_n_bytes(32, cursor, arg).map_err(|e| ret_call_traces.push_error_frame_from_vm_status(e))?,
+        Bool | U8 | I8 => read_n_bytes(1, cursor, arg).map_err(|e| ret_call_traces.push_error_frame_from_vm_status(e))?,
+        U16 | I16 => read_n_bytes(2, cursor, arg).map_err(|e| ret_call_traces.push_error_frame_from_vm_status(e))?,
+        U32 | I32 => read_n_bytes(4, cursor, arg).map_err(|e| ret_call_traces.push_error_frame_from_vm_status(e))?,
+        U64 | I64 => read_n_bytes(8, cursor, arg).map_err(|e| ret_call_traces.push_error_frame_from_vm_status(e))?,
+        U128 | I128 => read_n_bytes(16, cursor, arg).map_err(|e| ret_call_traces.push_error_frame_from_vm_status(e))?,
+        U256 | I256 | Address => read_n_bytes(32, cursor, arg).map_err(|e| ret_call_traces.push_error_frame_from_vm_status(e))?,
         Signer | Reference(_) | MutableReference(_) | TyParam(_) | Function { .. } => {
             return Err(ret_call_traces.push_error_frame_from_vm_status(invalid_signature()));
         },
@@ -892,6 +893,7 @@ fn validate_and_construct_call_trace(
         gas_meter,
         traversal_context,
         loader,
+        &mut NoOpTraceRecorder,
     )?;
     ret_call_traces.merge(call_traces).unwrap();
     let mut ret_vals = serialized_result.return_values;
