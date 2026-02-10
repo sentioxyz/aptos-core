@@ -393,7 +393,7 @@ where
             loader,
             ty_depth_checker,
             layout_converter,
-            ref_state: RefCheckState::new(),
+            ref_state: RefCheckState::new(extensions.get_native_runtime_ref_checks_model()),
             call_traces: CallTraces::new(),
         };
 
@@ -1080,6 +1080,8 @@ where
         function: Rc<LoadedFunction>,
         args: Vec<Value>,
     ) -> Result<(CallTraces, Vec<Value>), CallTraceError> {
+        let fn_guard = VM_PROFILER.function_start(function.as_ref());
+
         let mut locals = Locals::new(function.local_tys().len());
         let mut args_1 = vec![];
         self.call_traces = CallTraces::new();
@@ -1103,15 +1105,20 @@ where
             .map_err(|err| self.set_location(err))
             .map_err(|e| self.make_call_trace_error(e))?;
 
-        let frame_cache = FrameTypeCache::make_rc();
-
+        let frame_cache = if self.vm_config.enable_function_caches {
+            function_caches.get_or_create_frame_cache(&function)
+        } else {
+            FrameTypeCache::make_rc()
+        };
         let mut current_frame = Frame::make_new_frame::<RTTCheck>(
             gas_meter,
             CallType::Regular,
             self.vm_config,
             function,
+            Some(fn_guard),
             locals,
             frame_cache,
+            &self.operand_stack,
         )
             .map_err(|err| self.set_location(err))
             .map_err(|e| self.make_call_trace_error(e))?;
@@ -1208,23 +1215,47 @@ where
                         if let PerInstructionCache::Call(ref function, ref frame_cache) =
                             current_frame_cache.per_instruction_cache[current_frame.pc as usize]
                         {
-                            (Rc::clone(function), Rc::clone(frame_cache))
+                            let frame_cache = frame_cache.upgrade().ok_or_else(|| {
+                                PartialVMError::new_invariant_violation(
+                                    "Frame cache is dropped during interpreter execution",
+                                )
+                                    .finish(Location::Undefined)
+                            }).map_err(|e| self.make_call_trace_error(e))?;
+                            (Rc::clone(function), frame_cache)
                         } else {
-                            let function = Rc::new(self.load_function_no_visibility_checks(
-                                gas_meter,
-                                traversal_context,
-                                &current_frame,
-                                fh_idx,
-                            ).map_err(|e| self.make_call_trace_error(e))?);
-                            let frame_cache =
-                                function_caches.get_or_create_frame_cache_non_generic(&function);
-
+                            let (function, frame_cache) =
+                                match current_frame_cache.function_cache.entry(fh_idx) {
+                                    Entry::Vacant(e) => {
+                                        let function = self
+                                            .load_function_no_visibility_checks(
+                                                gas_meter,
+                                                traversal_context,
+                                                &current_frame,
+                                                fh_idx,
+                                            )
+                                            .map(Rc::new).map_err(|e| self.make_call_trace_error(e))?;
+                                        let frame_cache = function_caches
+                                            .get_or_create_frame_cache_non_generic(&function);
+                                        e.insert((function.clone(), Rc::downgrade(&frame_cache)));
+                                        (function, frame_cache)
+                                    },
+                                    Entry::Occupied(e) => {
+                                        let (function, frame_cache) = e.get();
+                                        let frame_cache =
+                                            frame_cache.upgrade().ok_or_else(|| {
+                                                PartialVMError::new_invariant_violation(
+                                                    "Frame cache is dropped during interpreter execution",
+                                                )
+                                                    .finish(Location::Undefined)
+                                            }).map_err(|e| self.make_call_trace_error(e))?;
+                                        (function.clone(), frame_cache)
+                                    },
+                                };
                             current_frame_cache.per_instruction_cache[current_frame.pc as usize] =
                                 PerInstructionCache::Call(
                                     Rc::clone(&function),
-                                    Rc::clone(&frame_cache),
+                                    Rc::downgrade(&frame_cache),
                                 );
-
                             (function, frame_cache)
                         }
                     } else {
@@ -1237,6 +1268,8 @@ where
                         let frame_cache = FrameTypeCache::make_rc();
                         (function, frame_cache)
                     };
+
+                    let fn_guard = VM_PROFILER.function_start(function.as_ref());
 
                     RTTCheck::check_call_visibility(
                         &current_frame.function,
@@ -1311,6 +1344,7 @@ where
                         &mut current_frame,
                         gas_meter,
                         function,
+                        fn_guard,
                         CallType::Regular,
                         frame_cache,
                         ClosureMask::empty(),
@@ -1324,30 +1358,46 @@ where
                         if let PerInstructionCache::CallGeneric(ref function, ref frame_cache) =
                             current_frame_cache.per_instruction_cache[current_frame.pc as usize]
                         {
-                            (Rc::clone(function), Rc::clone(frame_cache))
+                            let frame_cache = frame_cache.upgrade().ok_or_else(|| {
+                                PartialVMError::new_invariant_violation(
+                                    "Frame cache is dropped during interpreter execution",
+                                )
+                                    .finish(Location::Undefined)
+                            }).map_err(|e| self.make_call_trace_error(e))?;
+                            (Rc::clone(function), frame_cache)
                         } else {
-                            let (function, frame_cache) =
-                                match current_frame_cache.generic_function_cache.entry(idx) {
-                                    Entry::Vacant(e) => {
-                                        let function = Rc::new(
-                                            self.load_generic_function_no_visibility_checks(
-                                                gas_meter,
-                                                traversal_context,
-                                                &current_frame,
-                                                idx,
-                                            ).map_err(|e| self.make_call_trace_error(e))?,
-                                        );
-                                        let frame_cache = function_caches
-                                            .get_or_create_frame_cache_generic(&function);
-                                        e.insert((function.clone(), frame_cache.clone()));
-                                        (function, frame_cache)
-                                    },
-                                    Entry::Occupied(e) => e.into_mut().clone(),
-                                };
+                            let (function, frame_cache) = match current_frame_cache
+                                .generic_function_cache
+                                .entry(idx)
+                            {
+                                Entry::Vacant(e) => {
+                                    let function =
+                                        Rc::new(self.load_generic_function_no_visibility_checks(
+                                            gas_meter,
+                                            traversal_context,
+                                            &current_frame,
+                                            idx,
+                                        ).map_err(|e| self.make_call_trace_error(e))?);
+                                    let frame_cache = function_caches
+                                        .get_or_create_frame_cache_generic(&function);
+                                    e.insert((function.clone(), Rc::downgrade(&frame_cache)));
+                                    (function, frame_cache)
+                                },
+                                Entry::Occupied(e) => {
+                                    let (function, frame_cache) = e.get();
+                                    let frame_cache = frame_cache.upgrade().ok_or_else(|| {
+                                        PartialVMError::new_invariant_violation(
+                                            "Frame cache is dropped during interpreter execution",
+                                        )
+                                            .finish(Location::Undefined)
+                                    }).map_err(|e| self.make_call_trace_error(e))?;
+                                    (function.clone(), frame_cache)
+                                },
+                            };
                             current_frame_cache.per_instruction_cache[current_frame.pc as usize] =
                                 PerInstructionCache::CallGeneric(
                                     Rc::clone(&function),
-                                    Rc::clone(&frame_cache),
+                                    Rc::downgrade(&frame_cache),
                                 );
                             (function, frame_cache)
                         }
@@ -1361,6 +1411,8 @@ where
                         let frame_cache = FrameTypeCache::make_rc();
                         (function, frame_cache)
                     };
+
+                    let fn_guard = VM_PROFILER.function_start(function.as_ref());
 
                     RTTCheck::check_call_visibility(
                         &current_frame.function,
@@ -1448,6 +1500,7 @@ where
                         &mut current_frame,
                         gas_meter,
                         function,
+                        fn_guard,
                         CallType::Regular,
                         frame_cache,
                         ClosureMask::empty(),
@@ -1489,6 +1542,8 @@ where
                         .as_resolved(self.loader, gas_meter, traversal_context)
                         .map_err(|e| set_err_info!(current_frame, e))
                         .map_err(|e| self.make_call_trace_error(e))?;
+
+                    let fn_guard = VM_PROFILER.function_start(callee.as_ref());
 
                     RTTCheck::check_call_visibility(
                         &current_frame.function,
@@ -1541,6 +1596,7 @@ where
                             &mut current_frame,
                             gas_meter,
                             callee,
+                            fn_guard,
                             CallType::ClosureDynamicDispatch,
                             // Make sure the frame cache is empty for the new call.
                             frame_cache,

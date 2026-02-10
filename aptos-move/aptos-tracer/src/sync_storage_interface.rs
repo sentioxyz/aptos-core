@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use anyhow::{bail, ensure, format_err, Result};
-use aptos_config::config::{RocksdbConfigs, BUFFERED_STATE_TARGET_ITEMS, DEFAULT_MAX_NUM_NODES_PER_LRU_CACHE_SHARD, NO_OP_STORAGE_PRUNER_CONFIG, StorageDirPaths};
+use aptos_config::config::{RocksdbConfigs, BUFFERED_STATE_TARGET_ITEMS, DEFAULT_MAX_NUM_NODES_PER_LRU_CACHE_SHARD, NO_OP_STORAGE_PRUNER_CONFIG, StorageDirPaths, HotStateConfig};
 use aptos_db::AptosDB;
 use aptos_storage_interface::{AptosDbError, DbReader, MAX_REQUEST_LIMIT};
 use aptos_storage_interface::state_store::state_view::db_state_view::DbStateViewAtVersion;
@@ -38,6 +38,7 @@ impl DBTracerInterface {
                 BUFFERED_STATE_TARGET_ITEMS,
                 DEFAULT_MAX_NUM_NODES_PER_LRU_CACHE_SHARD,
                 None,
+                HotStateConfig::default()
             )
                 .map_err(anyhow::Error::from)?,
         )))

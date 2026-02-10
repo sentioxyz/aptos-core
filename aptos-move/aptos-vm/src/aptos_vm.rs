@@ -2650,7 +2650,7 @@ impl AptosVM {
         max_gas_amount: u64,
     ) -> anyhow::Result<CallTraces> {
         let env = AptosEnvironment::new(state_view);
-        let vm = AptosVM::new(&env, state_view);
+        let vm = AptosVM::new(&env);
 
         let executable = match txn.executable_ref() {
             Ok(executable) => executable,
