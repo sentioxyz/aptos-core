@@ -1,0 +1,98 @@
+name: "Release aptos-tracer"
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        type: string
+        required: true
+        description: "The release tag to create. E.g. `aptos-tracer-v0.1.0`:"
+      source_git_ref_override:
+        type: string
+        required: false
+        description: "Use this to override the Git SHA1, branch name, or tag to build from."
+      dry_run:
+        type: boolean
+        required: false
+        default: true
+        description: "Dry run. If checked, binaries are built and uploaded as workflow artifacts only."
+      skip_checks:
+        type: boolean
+        required: false
+        default: false
+        description: "Skip version/tag checks."
+
+jobs:
+  build-linux-x86-64:
+    name: "Build Linux x86_64 binary"
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_git_ref_override || github.sha }}
+      - uses: ./.github/actions/cli-rust-setup
+      - name: Build aptos-tracer
+        run: scripts/tracer/build_tracer_release.sh "Linux" "${{ inputs.release_tag }}" "${{ inputs.skip_checks }}" "true"
+      - name: Upload Binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: tracer-builds-linux-x86-64
+          path: aptos-tracer-*.zip
+
+  build-macos-x86-64:
+    name: "Build macOS x86_64 binary"
+    runs-on: macos-15-intel
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_git_ref_override || github.sha }}
+      - uses: ./.github/actions/cli-rust-setup
+      - name: Build aptos-tracer
+        run: scripts/tracer/build_tracer_release.sh "macOS" "${{ inputs.release_tag }}" "${{ inputs.skip_checks }}" "false"
+      - name: Upload Binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: tracer-builds-macos-x86-64
+          path: aptos-tracer-*.zip
+
+  build-macos-arm64:
+    name: "Build macOS ARM64 binary"
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_git_ref_override || github.sha }}
+      - uses: ./.github/actions/cli-rust-setup
+      - name: Build aptos-tracer
+        run: scripts/tracer/build_tracer_release.sh "macOS" "${{ inputs.release_tag }}" "${{ inputs.skip_checks }}" "false"
+      - name: Upload Binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: tracer-builds-macos-arm64
+          path: aptos-tracer-*.zip
+
+  release-binaries:
+    name: "Release binaries"
+    needs:
+      - build-linux-x86-64
+      - build-macos-x86-64
+      - build-macos-arm64
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: "write"
+    if: ${{ inputs.dry_run == false }}
+    steps:
+      - name: Download prebuilt binaries
+        uses: actions/download-artifact@v4
+        with:
+          pattern: tracer-builds-*
+          merge-multiple: true
+      - name: Create GitHub Release
+        uses: marvinpinto/action-automatic-releases@919008cf3f741b179569b7a6fb4d8860689ab7f0 # pin@v1.2.1
+        with:
+          repo_token: "${{ secrets.GITHUB_TOKEN }}"
+          automatic_release_tag: "${{ inputs.release_tag }}"
+          prerelease: false
+          title: "${{ format('Aptos Tracer Release {0}', inputs.release_tag) }}"
+          files: |
+            aptos-tracer-*.zip
