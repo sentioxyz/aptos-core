@@ -17,6 +17,7 @@ cargo build --locked --profile=$CLI_PROFILE \
     -p aptos-keyless-pepper-service \
     -p aptos-transaction-emitter \
     -p aptos-release-builder \
+    -p aptos-tracer \
     "$@"
 
 # After building, copy the binaries we need to `dist` since the `target` directory is used as docker cache mount and only available during the RUN step
@@ -28,6 +29,7 @@ BINS=(
     aptos-keyless-pepper-service
     aptos-transaction-emitter
     aptos-release-builder
+    aptos-tracer
 )
 
 mkdir dist
