@@ -11,11 +11,7 @@ use crate::{
     move_vm_ext::{AptosMoveResolver, SessionExt},
     VMStatus,
 };
-use move_binary_format::{
-    errors::{Location, PartialVMError, VMResult},
-    file_format::FunctionDefinitionIndex,
-    file_format_common::read_uleb128_as_u64,
-};
+use move_binary_format::{errors::{Location, PartialVMError, VMResult}, file_format::FunctionDefinitionIndex, file_format_common::read_uleb128_as_u64};
 use move_core_types::{
     account_address::AccountAddress,
     ident_str,
@@ -38,6 +34,7 @@ use std::{
     io::{Cursor, Read},
     sync::Arc,
 };
+use move_binary_format::call_trace::{CallTraceError, CallTraces};
 
 /// Maximum number of pack function invocations allowed during struct/enum argument construction.
 /// Acts as a DoS protection against deeply nested or complex struct arguments when only
@@ -257,6 +254,96 @@ pub(crate) fn legacy_is_valid_txn_arg<L: Loader>(
         },
         Signer | Reference(_) | MutableReference(_) | TyParam(_) | Function { .. } => false,
     }
+}
+
+pub(crate) fn validate_combine_signer_and_txn_args_call_trace(
+    session: &mut SessionExt<impl AptosMoveResolver>,
+    loader: &impl Loader,
+    gas_meter: &mut impl GasMeter,
+    traversal_context: &mut TraversalContext,
+    serialized_signers: &SerializedSigners,
+    args: Vec<Vec<u8>>,
+    func: &LoadedFunction,
+    are_struct_constructors_enabled: bool,
+) -> Result<(CallTraces, Vec<Vec<u8>>), CallTraceError> {
+    let mut ret_call_traces = CallTraces::new();
+    let _timer = VM_TIMER.timer_with_label("AptosVM::validate_combine_signer_and_txn_args");
+
+    // Entry function should not return.
+    if !func.return_tys().is_empty() {
+        return Err(ret_call_traces.push_error_frame_from_vm_status(VMStatus::error(
+            StatusCode::INVALID_MAIN_FUNCTION_SIGNATURE,
+            None,
+        )));
+    }
+    let mut signer_param_cnt = 0;
+    // find all signer params at the beginning
+    for ty in func.param_tys() {
+        if ty.is_signer_or_signer_ref() {
+            signer_param_cnt += 1;
+        }
+    }
+
+    let allowed_structs = get_allowed_structs(are_struct_constructors_enabled);
+    let ty_builder = &loader.runtime_environment().vm_config().ty_builder;
+
+    // Need to keep this here to ensure we return the historic correct error code for replay
+    for ty in func.param_tys()[signer_param_cnt..].iter() {
+        let subst_res = ty_builder.create_ty_with_subst(ty, func.ty_args());
+        let ty = subst_res
+            .map_err(|e| e.finish(Location::Undefined).into_vm_status())
+            .map_err(|e| ret_call_traces.push_error_frame_from_vm_status(e))?;
+        let valid = legacy_is_valid_txn_arg(loader, &ty, allowed_structs);
+        if !valid {
+            return Err(ret_call_traces.push_error_frame_from_vm_status(VMStatus::error(
+                StatusCode::INVALID_MAIN_FUNCTION_SIGNATURE,
+                None,
+            )));
+        }
+    }
+
+    if (signer_param_cnt + args.len()) != func.param_tys().len() {
+        return Err(ret_call_traces.push_error_frame_from_vm_status(VMStatus::error(
+            StatusCode::NUMBER_OF_ARGUMENTS_MISMATCH,
+            None,
+        )));
+    }
+
+    // If the invoked function expects one or more signers, we need to check that the number of
+    // signers actually passed is matching first to maintain backward compatibility before
+    // moving on to the validation of non-signer args.
+    // the number of txn senders should be the same number of signers
+    let sender_signers = serialized_signers.senders();
+    if signer_param_cnt > 0 && sender_signers.len() != signer_param_cnt {
+        return Err(ret_call_traces.push_error_frame_from_vm_status(VMStatus::error(
+            StatusCode::NUMBER_OF_SIGNER_ARGUMENTS_MISMATCH,
+            None,
+        )));
+    }
+
+    // This also validates that the args are valid. If they are structs, they have to be allowed
+    // and must be constructed successfully. If construction fails, this would fail with a
+    // FAILED_TO_DESERIALIZE_ARGUMENT error.
+    let (call_traces, args) = construct_args_call_trace(
+        session,
+        loader,
+        gas_meter,
+        traversal_context,
+        &func.param_tys()[signer_param_cnt..],
+        args,
+        func.ty_args(),
+        allowed_structs,
+        false,
+    ).map_err(|e| ret_call_traces.merge_error(e))?;
+    ret_call_traces.merge(call_traces).unwrap();
+
+    // Combine signer and non-signer arguments.
+    let combined_args = if signer_param_cnt == 0 {
+        args
+    } else {
+        sender_signers.into_iter().chain(args).collect()
+    };
+    Ok((ret_call_traces, combined_args))
 }
 
 /// Checks if a struct is in the allowed structs list (whitelisted structs like String, Object,
@@ -504,6 +591,46 @@ pub(crate) fn construct_args(
     Ok(res_args)
 }
 
+pub(crate) fn construct_args_call_trace(
+    session: &mut SessionExt<impl AptosMoveResolver>,
+    loader: &impl Loader,
+    gas_meter: &mut impl GasMeter,
+    traversal_context: &mut TraversalContext,
+    types: &[Type],
+    args: Vec<Vec<u8>>,
+    ty_args: &[Type],
+    allowed_structs: &ConstructorMap,
+    is_view: bool,
+) -> Result<(CallTraces, Vec<Vec<u8>>), CallTraceError> {
+    let mut ret_call_traces = CallTraces::new();
+    // Perhaps in a future we should do proper gas metering here
+    let mut res_args = vec![];
+    if types.len() != args.len() {
+        return Err(ret_call_traces.push_error_frame_from_vm_status(invalid_signature()));
+    }
+
+    let ty_builder = &loader.runtime_environment().vm_config().ty_builder;
+    for (ty, arg) in types.iter().zip(args) {
+        let subst_res = ty_builder.create_ty_with_subst(ty, ty_args);
+        let ty = subst_res
+            .map_err(|e| e.finish(Location::Undefined).into_vm_status())
+            .map_err(|e| ret_call_traces.push_error_frame_from_vm_status(e))?;
+        let (call_traces, arg) = construct_arg_call_trace(
+            session,
+            loader,
+            gas_meter,
+            traversal_context,
+            &ty,
+            allowed_structs,
+            arg,
+            is_view,
+        ).map_err(|e| ret_call_traces.merge_error(e))?;
+        ret_call_traces.merge(call_traces).unwrap();
+        res_args.push(arg);
+    }
+    Ok((ret_call_traces, res_args))
+}
+
 fn invalid_signature() -> VMStatus {
     VMStatus::error(StatusCode::INVALID_MAIN_FUNCTION_SIGNATURE, None)
 }
@@ -571,6 +698,64 @@ fn construct_arg(
         },
         Reference(_) | MutableReference(_) | TyParam(_) | Function { .. } => {
             Err(invalid_signature())
+        },
+    }
+}
+
+fn construct_arg_call_trace(
+    session: &mut SessionExt<impl AptosMoveResolver>,
+    loader: &impl Loader,
+    gas_meter: &mut impl GasMeter,
+    traversal_context: &mut TraversalContext,
+    ty: &Type,
+    allowed_structs: &ConstructorMap,
+    arg: Vec<u8>,
+    is_view: bool,
+) -> Result<(CallTraces, Vec<u8>), CallTraceError> {
+    let mut ret_call_traces = CallTraces::new();
+    use move_vm_types::loaded_data::runtime_types::Type::*;
+    match ty {
+        Bool | U8 | U16 | U32 | U64 | U128 | U256 | I8 | I16 | I32 | I64 | I128 | I256
+        | Address => Ok((ret_call_traces, arg)),
+        Vector(_) | Struct { .. } | StructInstantiation { .. } => {
+            let initial_cursor_len = arg.len();
+            let mut cursor = Cursor::new(&arg[..]);
+            let mut new_arg = vec![];
+            let mut max_invocations = 10; // Read from config in the future
+            let call_traces = recursively_construct_arg_call_trace(
+                session,
+                loader,
+                gas_meter,
+                traversal_context,
+                ty,
+                allowed_structs,
+                &mut cursor,
+                initial_cursor_len,
+                &mut max_invocations,
+                &mut new_arg,
+            ).map_err(|e| ret_call_traces.merge_error(e))?;
+            ret_call_traces.merge(call_traces).unwrap();
+            // Check cursor has parsed everything
+            // Unfortunately, is_empty is only enabled in nightly, so we check this way.
+            if cursor.position() != initial_cursor_len as u64 {
+                return Err(ret_call_traces.push_error_frame_from_vm_status(VMStatus::error(
+                    StatusCode::FAILED_TO_DESERIALIZE_ARGUMENT,
+                    Some(String::from(
+                        "The serialized arguments to constructor contained extra data",
+                    )),
+                )));
+            }
+            Ok((ret_call_traces, new_arg))
+        },
+        Signer => {
+            if is_view {
+                Ok((ret_call_traces, arg))
+            } else {
+                Err(ret_call_traces.push_error_frame_from_vm_status(invalid_signature()))
+            }
+        },
+        Reference(_) | MutableReference(_) | TyParam(_) | Function { .. } => {
+            Err(ret_call_traces.push_error_frame_from_vm_status(invalid_signature()))
         },
     }
 }
@@ -801,6 +986,90 @@ fn execute_pack_function(
         .0)
 }
 
+pub(crate) fn recursively_construct_arg_call_trace(
+    session: &mut SessionExt<impl AptosMoveResolver>,
+    loader: &impl Loader,
+    gas_meter: &mut impl GasMeter,
+    traversal_context: &mut TraversalContext,
+    ty: &Type,
+    allowed_structs: &ConstructorMap,
+    cursor: &mut Cursor<&[u8]>,
+    initial_cursor_len: usize,
+    max_invocations: &mut u64,
+    arg: &mut Vec<u8>,
+) -> Result<CallTraces, CallTraceError> {
+    let mut ret_call_traces = CallTraces::new();
+    use move_vm_types::loaded_data::runtime_types::Type::*;
+
+    match ty {
+        Vector(inner) => {
+            // get the vector length and iterate over each element
+            let mut len = get_len(cursor).map_err(|e| ret_call_traces.push_error_frame_from_vm_status(e))?;
+            serialize_uleb128(len, arg);
+            while len > 0 {
+                let call_traces = recursively_construct_arg_call_trace(
+                    session,
+                    loader,
+                    gas_meter,
+                    traversal_context,
+                    inner,
+                    allowed_structs,
+                    cursor,
+                    initial_cursor_len,
+                    max_invocations,
+                    arg,
+                ).map_err(|e| ret_call_traces.merge_error(e))?;
+                ret_call_traces.merge(call_traces).unwrap();
+                len -= 1;
+            }
+        },
+        Struct { .. } | StructInstantiation { .. } => {
+            let (module_id, identifier) = loader
+                .runtime_environment()
+                .get_struct_name(ty)
+                .map_err(|_| {
+                    // Note: The original behaviour was to map all errors to an invalid signature
+                    //       error, here we want to preserve it for now.
+                    invalid_signature()
+                })
+                .map_err(|e| ret_call_traces.push_error_frame_from_vm_status(e))?
+                .ok_or_else(invalid_signature)
+                .map_err(|e| ret_call_traces.push_error_frame_from_vm_status(e))?;
+            let full_name = format!("{}::{}", module_id.short_str_lossless(), identifier);
+            let constructor = allowed_structs
+                .get(&full_name)
+                .ok_or_else(invalid_signature)
+                .map_err(|e| ret_call_traces.push_error_frame_from_vm_status(e))?;
+            // By appending the BCS to the output parameter we construct the correct BCS format
+            // of the argument.
+            let (call_traces, mut val) = validate_and_construct_call_trace(
+                session,
+                loader,
+                gas_meter,
+                traversal_context,
+                ty,
+                constructor,
+                allowed_structs,
+                cursor,
+                initial_cursor_len,
+                max_invocations,
+            ).map_err(|e| ret_call_traces.merge_error(e))?;
+            ret_call_traces.merge(call_traces).unwrap();
+            arg.append(&mut val);
+        },
+        Bool | U8 | I8 => read_n_bytes(1, cursor, arg).map_err(|e| ret_call_traces.push_error_frame_from_vm_status(e))?,
+        U16 | I16 => read_n_bytes(2, cursor, arg).map_err(|e| ret_call_traces.push_error_frame_from_vm_status(e))?,
+        U32 | I32 => read_n_bytes(4, cursor, arg).map_err(|e| ret_call_traces.push_error_frame_from_vm_status(e))?,
+        U64 | I64 => read_n_bytes(8, cursor, arg).map_err(|e| ret_call_traces.push_error_frame_from_vm_status(e))?,
+        U128 | I128 => read_n_bytes(16, cursor, arg).map_err(|e| ret_call_traces.push_error_frame_from_vm_status(e))?,
+        U256 | I256 | Address => read_n_bytes(32, cursor, arg).map_err(|e| ret_call_traces.push_error_frame_from_vm_status(e))?,
+        Signer | Reference(_) | MutableReference(_) | TyParam(_) | Function { .. } => {
+            return Err(ret_call_traces.push_error_frame_from_vm_status(invalid_signature()));
+        },
+    };
+    Ok(ret_call_traces)
+}
+
 // A move function that constructs a type will return the BCS serialized representation of the
 // constructed value. This is the correct data to pass as the argument to a function taking
 // said struct as a parameter. In this function we execute the constructor constructing the
@@ -887,6 +1156,120 @@ fn validate_and_construct(
         invocations_remaining,
         pack_fn_cache,
     )
+}
+
+fn validate_and_construct_call_trace(
+    session: &mut SessionExt<impl AptosMoveResolver>,
+    loader: &impl Loader,
+    gas_meter: &mut impl GasMeter,
+    traversal_context: &mut TraversalContext,
+    expected_type: &Type,
+    constructor: &FunctionId,
+    allowed_structs: &ConstructorMap,
+    cursor: &mut Cursor<&[u8]>,
+    initial_cursor_len: usize,
+    max_invocations: &mut u64,
+) -> Result<(CallTraces, Vec<u8>), CallTraceError> {
+    let mut ret_call_traces = CallTraces::new();
+    if *max_invocations == 0 {
+        return Err(ret_call_traces.push_error_frame_from_vm_status(VMStatus::error(
+            StatusCode::FAILED_TO_DESERIALIZE_ARGUMENT,
+            None,
+        )))
+    }
+    // HACK mitigation of performance attack
+    // To maintain compatibility with vector<string> or so on, we need to allow unlimited strings.
+    // So we do not count the string constructor against the max_invocations, instead we
+    // shortcut the string case to avoid the performance attack.
+    if constructor.func_name.as_str() == "utf8" {
+        let constructor_error = || {
+            // A slight hack, to prevent additional piping of the feature flag through all
+            // function calls. We know the feature is active when more structs then just strings are
+            // allowed.
+            let are_struct_constructors_enabled = allowed_structs.len() > 1;
+            if are_struct_constructors_enabled {
+                PartialVMError::new(StatusCode::ABORTED)
+                    .with_sub_status(1)
+                    .at_code_offset(FunctionDefinitionIndex::new(0), 0)
+                    .finish(Location::Module(constructor.module_id.clone()))
+                    .into_vm_status()
+            } else {
+                VMStatus::error(StatusCode::FAILED_TO_DESERIALIZE_ARGUMENT, None)
+            }
+        };
+        // Short cut for the utf8 constructor, which is a special case.
+        let len = get_len(cursor).map_err(|e| ret_call_traces.push_error_frame_from_vm_status(e))?;
+        if !cursor
+            .position()
+            .checked_add(len as u64)
+            .is_some_and(|l| l <= initial_cursor_len as u64)
+        {
+            // We need to make sure we do not allocate more bytes than
+            // needed.
+            return Err(ret_call_traces.push_error_frame_from_vm_status(VMStatus::error(
+                StatusCode::FAILED_TO_DESERIALIZE_ARGUMENT,
+                Some("String argument is too long".to_string()),
+            )));
+        }
+
+        let mut arg = vec![];
+        read_n_bytes(len, cursor, &mut arg).map_err(|e| ret_call_traces.push_error_frame_from_vm_status(e))?;
+        std::str::from_utf8(&arg).map_err(|_| constructor_error()).map_err(|e| ret_call_traces.push_error_frame_from_vm_status(e))?;
+        return bcs::to_bytes(&arg)
+            .map(|ret| (ret_call_traces.clone(), ret))
+            .map_err(|_| ret_call_traces.push_error_frame_from_vm_status(VMStatus::error(StatusCode::FAILED_TO_DESERIALIZE_ARGUMENT, None)));
+    } else {
+        *max_invocations -= 1;
+    }
+
+    let function = load_constructor_function(
+        loader,
+        gas_meter,
+        traversal_context,
+        &constructor.module_id,
+        constructor.func_name,
+        expected_type,
+    ).map_err(|e| ret_call_traces.push_error_frame(e))?;
+    let mut args = vec![];
+    let ty_builder = &loader.runtime_environment().vm_config().ty_builder;
+    for param_ty in function.param_tys() {
+        let mut arg = vec![];
+        let arg_ty = ty_builder
+            .create_ty_with_subst(param_ty, function.ty_args())
+            .unwrap();
+
+        let call_traces = recursively_construct_arg_call_trace(
+            session,
+            loader,
+            gas_meter,
+            traversal_context,
+            &arg_ty,
+            allowed_structs,
+            cursor,
+            initial_cursor_len,
+            max_invocations,
+            &mut arg,
+        ).map_err(|e| ret_call_traces.merge_error(e))?;
+        ret_call_traces.merge(call_traces).unwrap();
+        args.push(arg);
+    }
+    let (call_traces, serialized_result) = session.call_trace_loaded_function(
+        function,
+        args,
+        gas_meter,
+        traversal_context,
+        loader,
+        &mut NoOpTraceRecorder,
+    )?;
+    ret_call_traces.merge(call_traces).unwrap();
+    let mut ret_vals = serialized_result.return_values;
+    // We know ret_vals.len() == 1
+    let ret_val = ret_vals.pop()
+        .ok_or_else(|| ret_call_traces.push_error_frame_from_vm_status(VMStatus::error(
+            StatusCode::INTERNAL_TYPE_ERROR,
+            Some(String::from("Constructor did not return value")),
+        )))?.0;
+    Ok((ret_call_traces, ret_val))
 }
 
 // String is a vector of bytes, so both string and vector carry a length in the serialized format.

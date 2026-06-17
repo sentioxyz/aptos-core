@@ -79,6 +79,7 @@ use aptos_types::{
         encrypted_payload::DecryptionFailureReason,
         signature_verified_transaction::SignatureVerifiedTransaction,
         AuxiliaryInfo, BlockOutput, EntryFunction, ExecutionError, ExecutionStatus, ModuleBundle,
+        PersistedAuxiliaryInfo,
         MultisigTransactionPayload, ReplayProtector, Script, SignedTransaction, Transaction,
         TransactionArgument, TransactionExecutableRef, TransactionExtraConfig, TransactionOutput,
         TransactionPayload, TransactionStatus, TxnLimitsRequest, VMValidatorResult,
@@ -156,6 +157,7 @@ use std::{
     str::FromStr,
     sync::Arc,
 };
+use move_binary_format::call_trace::{CallTraces, InternalCallTrace};
 
 static EXECUTION_CONCURRENCY_LEVEL: OnceCell<usize> = OnceCell::new();
 static BLOCKSTM_V2_ENABLED: OnceCell<bool> = OnceCell::new();
@@ -285,6 +287,13 @@ pub(crate) fn get_or_vm_startup_failure<'a, T>(
 
 /// Checks if a given transaction is a governance proposal by checking if it has one of the
 /// approved execution hashes.
+
+/// Result of `AptosVM::get_call_trace`: call traces + execution output for verification.
+pub struct CallTraceResult {
+    pub call_traces: CallTraces,
+    pub events: Vec<aptos_types::contract_event::ContractEvent>,
+    pub write_set: aptos_types::write_set::WriteSet,
+}
 
 pub struct AptosVM {
     is_simulation: bool,
@@ -2846,6 +2855,476 @@ impl AptosVM {
         //   transaction. (maybe resort to the move resolver, but for simplicity I would
         //   just include the full slot in both the transaction and the output).
         Ok((VMStatus::Executed, output))
+    }
+
+    /// Get the call trace for a transaction.
+    /// `transaction_index` is the position of the tx within its block (version - block_first_version).
+    /// Providing the correct index ensures execution matches on-chain exactly.
+    pub fn get_call_trace(
+        state_view: &impl StateView,
+        txn: &SignedTransaction,
+        max_gas_amount: u64,
+        transaction_index: Option<u32>,
+    ) -> anyhow::Result<CallTraceResult> {
+        let env = AptosEnvironment::new(state_view);
+        let vm = AptosVM::new(&env);
+        let auxiliary_info = match transaction_index {
+            Some(idx) => AuxiliaryInfo::new(
+                PersistedAuxiliaryInfo::V1 { transaction_index: idx },
+                None,
+            ),
+            None => AuxiliaryInfo::new_timestamp_not_yet_assigned(0),
+        };
+
+        let resolver = state_view.as_move_resolver();
+        let module_storage = state_view.as_aptos_code_storage(&env);
+        vm.check_authenticator_features(txn.authenticator_ref())
+            .map_err(|err| anyhow::Error::msg(format!("{}", err)))?;
+        let txn_metadata = TransactionMetadata::new(&vm, &resolver, txn, &auxiliary_info)
+            .map_err(|err| anyhow::Error::msg(format!("{}", err)))?;
+
+        let executable = match txn.executable_ref() {
+            Ok(executable) => executable,
+            Err(_) => return Err(anyhow::Error::msg(format!("{}", deprecated_module_bundle!()))),
+        };
+
+        let log_context = AdapterLogSchema::new(state_view.id(), 0);
+
+        let vm_gas_params = match vm.gas_params(&log_context) {
+            Ok(gas_params) => gas_params.vm.clone(),
+            Err(err) => {
+                return Err(anyhow::Error::msg(format!("{}", err)))
+            },
+        };
+        let storage_gas_params = match vm.storage_gas_params(&log_context) {
+            Ok(gas_params) => gas_params.clone(),
+            Err(err) => {
+                return Err(anyhow::Error::msg(format!("{}", err)))
+            },
+        };
+
+        let initial_balance = if vm.features().is_account_abstraction_enabled()
+            || vm.features().is_derivable_account_abstraction_enabled()
+        {
+            vm_gas_params.txn.max_aa_gas.min(max_gas_amount.into())
+        } else {
+            max_gas_amount.into()
+        };
+
+        let mut gas_meter = make_prod_gas_meter(
+            vm.gas_feature_version(),
+            vm_gas_params.clone(),
+            storage_gas_params.clone(),
+            txn_metadata.txn_limits.as_ref(),
+            initial_balance,
+            &NoopBlockSynchronizationKillSwitch {},
+        );
+
+        gas_meter.charge_intrinsic_gas_for_transaction(txn_metadata.transaction_size())?;
+        if txn_metadata.is_keyless() {
+            gas_meter.charge_keyless()?;
+        }
+
+        // Create SerializedSigners from senders
+        let senders_serialized: Vec<Vec<u8>> = txn_metadata.senders()
+            .iter()
+            .map(|addr| serialized_signer(addr))
+            .collect();
+
+        let mut session = vm.new_session(
+            &resolver,
+            SessionId::txn_meta(&txn_metadata),
+            Some(txn_metadata.as_user_transaction_context()),
+        );
+
+        let multisig_address = txn.multisig_address();
+        let mut ret = if let Some(multisig_address) = multisig_address {
+            let traversal_storage = TraversalStorage::new();
+            let mut traversal_context = TraversalContext::new(&traversal_storage);
+
+            let invariant_violation_error = || {
+                PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR)
+                    .with_message("MultiSig transaction error".to_string())
+                    .finish(Location::Undefined)
+            };
+            let provided_payload = match executable {
+                TransactionExecutableRef::EntryFunction(entry_func) => {
+                    // TODO[Orderless]: For backward compatibility reasons, still using `MultisigTransactionPayload` here.
+                    // Find a way to deprecate this.
+                    bcs::to_bytes(&MultisigTransactionPayload::EntryFunction(
+                        entry_func.clone(),
+                    ))
+                        .map_err(|_| invariant_violation_error())?
+                },
+                TransactionExecutableRef::Empty => {
+                    // Default to empty bytes if payload is not provided.
+                    if vm
+                        .features()
+                        .is_abort_if_multisig_payload_mismatch_enabled()
+                    {
+                        vec![]
+                    } else {
+                        bcs::to_bytes::<Vec<u8>>(&vec![]).map_err(|_| invariant_violation_error())?
+                    }
+                },
+                TransactionExecutableRef::Script(_) => {
+                    return Ok(CallTraceResult {
+                        call_traces: CallTraces::new(),
+                        events: vec![],
+                        write_set: aptos_types::write_set::WriteSet::default(),
+                    });
+                },
+                TransactionExecutableRef::Encrypted => {
+                    return Ok(CallTraceResult {
+                        call_traces: CallTraces::new(),
+                        events: vec![],
+                        write_set: aptos_types::write_set::WriteSet::default(),
+                    });
+                },
+            };
+
+            let mut prologue_session = PrologueSession::new(&vm, &txn_metadata, &resolver);
+            prologue_session
+                .execute(|session| {
+                    session.execute_function_bypass_visibility(
+                        &MULTISIG_ACCOUNT_MODULE,
+                        VALIDATE_MULTISIG_TRANSACTION,
+                        vec![],
+                        serialize_values(&vec![
+                            MoveValue::Signer(txn_metadata.sender),
+                            MoveValue::Address(multisig_address),
+                            MoveValue::vector_u8(provided_payload.clone()),
+                        ]),
+                        &mut UnmeteredGasMeter,
+                        &mut traversal_context,
+                        &module_storage,
+                    )
+                        .map(|_return_vals| ())
+                        .map_err(expect_no_verification_errors)
+                })?;
+
+            // Failures here will be propagated back.
+            let payload_bytes: Vec<Vec<u8>> =
+                session.execute_function_bypass_visibility(
+                    &MULTISIG_ACCOUNT_MODULE,
+                    GET_NEXT_TRANSACTION_PAYLOAD,
+                    vec![],
+                    serialize_values(&vec![
+                        MoveValue::Address(multisig_address),
+                        MoveValue::vector_u8(provided_payload),
+                    ]),
+                    &mut gas_meter,
+                    &mut traversal_context,
+                    &module_storage,
+                )?
+                    .return_values
+                    .into_iter()
+                    .map(|(bytes, _ty)| bytes)
+                    .collect::<Vec<_>>();
+            let payload_bytes = payload_bytes
+                .first()
+                // We expect the payload to either exists on chain or be passed along with the
+                // transaction.
+                .ok_or_else(|| {
+                    PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR)
+                        .with_message("Multisig payload bytes return error".to_string())
+                        .finish(Location::Undefined)
+                })?;
+            // We have to deserialize twice as the first time returns the actual return type of the
+            // function, which is vec<u8>. The second time deserializes it into the correct
+            // EntryFunction payload type.
+            // If either deserialization fails for some reason, that means the user provided incorrect
+            // payload data either during transaction creation or execution.
+            let deserialization_error = || {
+                PartialVMError::new(StatusCode::FAILED_TO_DESERIALIZE_ARGUMENT)
+                    .finish(Location::Undefined)
+            };
+            let payload_bytes =
+                bcs::from_bytes::<Vec<u8>>(payload_bytes).map_err(|_| deserialization_error())?;
+            let payload = bcs::from_bytes::<MultisigTransactionPayload>(&payload_bytes)
+                .map_err(|_| deserialization_error())?;
+
+            // Step 2: Execute the target payload. Transaction failure here is tolerated. In case of any
+            // failures, we'll discard the session and start a new one. This ensures that any data
+            // changes are not persisted.
+            // The multisig transaction would still be considered executed even if execution fails.
+            match payload {
+                MultisigTransactionPayload::EntryFunction(entry_func) => {
+                    Self::get_call_trace_for_entry_function(
+                        &mut session,
+                        &vm,
+                        &SerializedSigners::new(vec![serialized_signer(&multisig_address)], None),
+                        &entry_func,
+                        &module_storage,
+                        &mut gas_meter,
+                    )
+                }
+                MultisigTransactionPayload::Script(script) => {
+                    Self::get_call_trace_for_script(
+                        &mut session,
+                        &vm,
+                        &SerializedSigners::new(vec![serialized_signer(&multisig_address)], None),
+                        &script,
+                        &module_storage,
+                        &mut gas_meter,
+                    )
+                }
+            }
+        } else {
+            match executable {
+                TransactionExecutableRef::Script(serialized_script) => {
+                    let serialized_signers = SerializedSigners::new(
+                        senders_serialized,
+                        txn_metadata.fee_payer().as_ref().map(|addr| serialized_signer(addr)),
+                    );
+                    Self::get_call_trace_for_script(
+                        &mut session,
+                        &vm,
+                        &serialized_signers,
+                        &serialized_script,
+                        &module_storage,
+                        &mut gas_meter,
+                    )
+                }
+                TransactionExecutableRef::EntryFunction(entry_func) => {
+                    let serialized_signers = SerializedSigners::new(senders_serialized, None);
+                    Self::get_call_trace_for_entry_function(
+                        &mut session,
+                        &vm,
+                        &serialized_signers,
+                        entry_func,
+                        &module_storage,
+                        &mut gas_meter,
+                    )
+                }
+                TransactionExecutableRef::Empty => unimplemented!(),
+                TransactionExecutableRef::Encrypted => unimplemented!()
+            }
+        };
+
+        let change_set_configs = storage_gas_params.change_set_configs;
+        let maybe_publish_request = session.extract_publish_request();
+        let user_session_change_set = if maybe_publish_request.is_none() {
+            let change_set = session.finish(&change_set_configs, &module_storage)?;
+            let mut user_session_change_set = UserSessionChangeSet::new(
+                change_set,
+                ModuleWriteSet::empty(),
+                &change_set_configs,
+            )?;
+            vm.charge_change_set(
+                &mut user_session_change_set,
+                &mut gas_meter,
+                &txn_metadata,
+                &resolver,
+                &module_storage,
+            )?;
+            user_session_change_set
+        } else {
+            unimplemented!()
+        };
+
+        if let Ok(ref mut call_traces) = ret {
+            call_traces.set_root_gas(
+                u64::from(txn_metadata.max_gas_amount.to_unit_with_params(&vm_gas_params.txn)),
+                u64::from(gas_meter.balance_internal())
+            );
+        };
+
+        let call_traces = ret?;
+        let (mut change_set, module_write_set) = user_session_change_set.unpack();
+        change_set
+            .try_materialize_aggregator_v1_delta_set(&resolver)
+            .map_err(|e| anyhow::Error::msg(e.to_string()))?;
+        let (write_set, events) = change_set
+            .try_combine_into_storage_change_set(module_write_set)
+            .map_err(|e| anyhow::Error::msg(e.to_string()))?
+            .into_inner();
+
+        Ok(CallTraceResult {
+            call_traces,
+            events,
+            write_set,
+        })
+    }
+
+    pub(crate) fn get_call_trace_for_entry_function(
+        mut session: &mut SessionExt<impl AptosMoveResolver>,
+        vm: &AptosVM,
+        serialized_signers: &SerializedSigners,
+        entry_fn: &EntryFunction,
+        module_storage: &impl AptosModuleStorage,
+        gas_meter: &mut impl AptosGasMeter,
+    ) -> anyhow::Result<CallTraces> {
+        dispatch_loader!(module_storage, loader, {
+            let legacy_loader_config = LegacyLoaderConfig {
+                charge_for_dependencies: vm.gas_feature_version() >= RELEASE_V1_10,
+                charge_for_ty_tag_dependencies: vm.gas_feature_version() >= RELEASE_V1_27,
+            };
+            let traversal_storage = TraversalStorage::new();
+            let mut traversal_context = TraversalContext::new(&traversal_storage);
+
+            let arguments = entry_fn.args().to_vec();
+
+            let function = loader.load_instantiated_function(
+                &legacy_loader_config,
+                gas_meter,
+                &mut traversal_context,
+                entry_fn.module(),
+                entry_fn.function(),
+                entry_fn.ty_args(),
+            )?;
+
+            // Native entry function is forbidden.
+            if function.is_native() {
+                return Err(anyhow::Error::msg(
+                    PartialVMError::new(StatusCode::USER_DEFINED_NATIVE_NOT_ALLOWED)
+                        .with_message(
+                            "Executing user defined native entry function is not allowed"
+                                .to_string(),
+                        )
+                        .finish(Location::Module(entry_fn.module().clone()))
+                        .into_vm_status(),
+                ));
+            }
+
+            // The check below should have been feature-gated in 1.11...
+            if function.is_friend_or_private() {
+                let maybe_randomness_annotation = get_randomness_annotation_for_entry_function(
+                    entry_fn,
+                    &function.owner_as_module()?.metadata,
+                );
+                if maybe_randomness_annotation.is_some() {
+                    session.mark_unbiasable();
+                }
+            }
+
+            match transaction_arg_validation::validate_combine_signer_and_txn_args_call_trace(
+                &mut session,
+                &loader,
+                gas_meter,
+                &mut traversal_context,
+                &serialized_signers,
+                arguments,
+                &function,
+                vm.features().is_enabled(FeatureFlag::STRUCT_CONSTRUCTORS),
+            ) {
+                Ok((prologue_call_traces, args)) => {
+                    let prologue_frame = Self::make_prologue_frame(prologue_call_traces);
+                    let call_trace_res = session.call_trace_loaded_function(
+                        function,
+                        args,
+                        gas_meter,
+                        &mut traversal_context,
+                        &loader,
+                        &mut NoOpTraceRecorder,
+                    );
+                    let mut ret = match call_trace_res {
+                        Ok((call_traces, _)) => call_traces,
+                        Err(err) => err.call_traces
+                    };
+                    ret.prepend_call_trace(prologue_frame);
+                    Ok(ret)
+                }
+                Err(err) => {
+                    let prologue_call_traces = err.call_traces;
+                    let prologue_frame = Self::make_prologue_frame(prologue_call_traces);
+                    let mut ret = CallTraces::new();
+                    ret.push(prologue_frame).expect("Something went wrong");
+                    Ok(ret)
+                }
+            }
+        })
+    }
+
+    pub(crate) fn get_call_trace_for_script(
+        mut session: &mut SessionExt<impl AptosMoveResolver>,
+        vm: &AptosVM,
+        serialized_signers: &SerializedSigners,
+        serialized_script: &Script,
+        module_storage: &impl AptosCodeStorage,
+        gas_meter: &mut impl AptosGasMeter,
+    ) -> anyhow::Result<CallTraces> {
+        if !vm
+            .features()
+            .is_enabled(FeatureFlag::ALLOW_SERIALIZED_SCRIPT_ARGS)
+        {
+            for arg in serialized_script.args() {
+                if let TransactionArgument::Serialized(_) = arg {
+                    return Err(anyhow::Error::msg(PartialVMError::new(StatusCode::FEATURE_UNDER_GATING)
+                        .finish(Location::Script)
+                        .into_vm_status()));
+                }
+            }
+        }
+
+        // let func = module_storage.load_script(script.code(), script.ty_args())?;
+        let traversal_storage = TraversalStorage::new();
+        let mut traversal_context = TraversalContext::new(&traversal_storage);
+
+        dispatch_loader!(module_storage, loader, {
+            let legacy_loader_config = LegacyLoaderConfig {
+                charge_for_dependencies: vm.gas_feature_version() >= RELEASE_V1_10,
+                charge_for_ty_tag_dependencies: vm.gas_feature_version() >= RELEASE_V1_27,
+            };
+            let func = loader.load_script(
+                &legacy_loader_config,
+                gas_meter,
+                &mut traversal_context,
+                serialized_script.code(),
+                serialized_script.ty_args(),
+            )?;
+
+            // Check that unstable bytecode cannot be executed on mainnet and verify events.
+            let script = func.owner_as_script()?;
+            vm.reject_unstable_bytecode_for_script(script)?;
+            event_validation::verify_no_event_emission_in_compiled_script(script)?;
+
+            match transaction_arg_validation::validate_combine_signer_and_txn_args_call_trace(
+                &mut session,
+                &loader,
+                gas_meter,
+                &mut traversal_context,
+                &serialized_signers,
+                convert_txn_args(serialized_script.args()),
+                &func,
+                vm.features().is_enabled(FeatureFlag::STRUCT_CONSTRUCTORS),
+            ) {
+                Ok((prologue_call_traces, args)) => {
+                    let prologue_frame = Self::make_prologue_frame(prologue_call_traces);
+                    let call_trace_res = session.call_trace_loaded_function(
+                        func,
+                        args,
+                        gas_meter,
+                        &mut traversal_context,
+                        &loader,
+                        &mut NoOpTraceRecorder,
+                    );
+                    let mut ret = match call_trace_res {
+                        Ok((call_traces, _)) => call_traces,
+                        Err(err) => err.call_traces
+                    };
+                    ret.prepend_call_trace(prologue_frame);
+                    Ok(ret)
+                }
+                Err(err) => {
+                    let prologue_call_traces = err.call_traces;
+                    let prologue_frame = Self::make_prologue_frame(prologue_call_traces);
+                    let mut ret = CallTraces::new();
+                    ret.push(prologue_frame).expect("Something went wrong");
+                    Ok(ret)
+                }
+            }
+        })
+    }
+
+    fn make_prologue_frame(call_traces: CallTraces) -> InternalCallTrace {
+        InternalCallTrace {
+            from_module_id: "0000000000000000000000000000000000000000000000000000000000000000::transaction_arg_validation".parse().unwrap(),
+            module_id: "0000000000000000000000000000000000000000000000000000000000000000::transaction_arg_validation".parse().unwrap(),
+            func_name: "validate_combine_signer_and_txn_args".parse().unwrap(),
+            sub_traces: call_traces,
+            ..InternalCallTrace::default()
+        }
     }
 
     pub fn execute_view_function(
