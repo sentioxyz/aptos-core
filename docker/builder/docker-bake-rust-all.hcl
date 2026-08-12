@@ -129,6 +129,17 @@ target "forge-builder" {
   ]
 }
 
+target "tracer-builder" {
+  dockerfile = "docker/builder/builder.Dockerfile"
+  target     = "tracer-builder"
+  contexts = {
+    builder-base = "target:builder-base"
+  }
+  secret = [
+    "id=GIT_CREDENTIALS"
+  ]
+}
+
 target "indexer-builder" {
   dockerfile = "docker/builder/builder.Dockerfile"
   target     = "indexer-builder"
@@ -147,6 +158,27 @@ target "_common" {
     forge-builder   = "target:forge-builder"
     tools-builder   = "target:tools-builder"
     indexer-builder = "target:indexer-builder"
+  }
+  labels = {
+    "org.label-schema.schema-version" = "1.0",
+    "org.label-schema.build-date"     = "${BUILD_DATE}"
+    "org.label-schema.git-sha"        = "${GIT_SHA}"
+  }
+  args = {
+    PROFILE    = "${PROFILE}"
+    FEATURES   = "${FEATURES}"
+    GIT_SHA    = "${GIT_SHA}"
+    GIT_BRANCH = "${GIT_BRANCH}"
+    GIT_TAG    = "${GIT_TAG}"
+    BUILD_DATE = "${BUILD_DATE}"
+  }
+  output     = ["type=image,compression=zstd,force-compression=true"]
+}
+
+target "tracer-common" {
+  contexts = {
+    debian-base     = "target:debian-base"
+    tracer-builder   = "target:tracer-builder"
   }
   labels = {
     "org.label-schema.schema-version" = "1.0",
@@ -198,6 +230,14 @@ target "tools" {
   target     = "tools"
   tags       = generate_tags("tools")
 }
+
+target "aptos-tracer" {
+  inherits   = ["tracer-common"]
+  dockerfile = "docker/builder/aptos-tracer.Dockerfile"
+  target     = "aptos-tracer"
+  tags       = generate_tags("aptos-tracer")
+}
+
 target "faucet" {
   inherits   = ["_common"]
   dockerfile = "docker/builder/faucet.Dockerfile"

@@ -53,6 +53,7 @@ use move_vm_types::{
     values::Value,
 };
 use std::{borrow::Borrow, collections::BTreeMap};
+use move_binary_format::call_trace::{CallTraceError, CallTraces};
 use triomphe::Arc as TriompheArc;
 
 pub mod respawned_session;
@@ -147,6 +148,27 @@ where
         trace_recorder: &mut impl TraceRecorder,
     ) -> VMResult<SerializedReturnValues> {
         MoveVM::execute_loaded_function_with_tracing(
+            func,
+            args,
+            &mut MoveVmDataCacheAdapter::new(&mut self.data_cache, self.resolver, loader),
+            gas_meter,
+            traversal_context,
+            &mut self.extensions,
+            loader,
+            trace_recorder,
+        )
+    }
+
+    pub fn call_trace_loaded_function(
+        &mut self,
+        func: LoadedFunction,
+        args: Vec<impl Borrow<[u8]>>,
+        gas_meter: &mut impl GasMeter,
+        traversal_context: &mut TraversalContext,
+        loader: &impl Loader,
+        trace_recorder: &mut impl TraceRecorder,
+    ) -> Result<(CallTraces, SerializedReturnValues), CallTraceError> {
+        MoveVM::call_trace_loaded_function(
             func,
             args,
             &mut MoveVmDataCacheAdapter::new(&mut self.data_cache, self.resolver, loader),

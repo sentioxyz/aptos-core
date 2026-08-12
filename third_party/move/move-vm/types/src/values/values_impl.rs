@@ -736,7 +736,7 @@ impl Value {
     // Note(inline): recursive function, but `#[cfg_attr(feature = "force-inline", inline(always))]` seems to improve perf slightly
     //               and doesn't add much compile time.
     #[inline(always)]
-    fn copy_value(&self, depth: u64, max_depth: Option<u64>) -> PartialVMResult<Self> {
+    pub fn copy_value(&self, depth: u64, max_depth: Option<u64>) -> PartialVMResult<Self> {
         use Value::*;
 
         check_depth(depth, max_depth)?;
@@ -6478,10 +6478,11 @@ pub mod prop {
     }
 }
 
-#[cfg(any(test, feature = "fuzzing", feature = "testing"))]
 impl Value {
     // TODO: Consider removing this API, or at least it should return a Result!
-    pub fn as_move_value(&self, layout: &MoveTypeLayout) -> MoveValue {
+    pub fn as_move_value(&self, layout: &MoveTypeLayout) -> move_core_types::value::MoveValue {
+        type MoveValue = move_core_types::value::MoveValue;
+        use move_core_types::value::MoveStruct;
         use crate::values::function_values_impl::mock::MockAbstractFunction;
         use MoveTypeLayout as L;
 
@@ -6596,12 +6597,15 @@ impl Value {
                     };
                     MoveValue::closure(move_closure)
                 } else {
-                    // Fallback for unknown function types
-                    panic!("Cannot convert unknown function type to MoveValue")
+                    // Fallback for unknown function types - return a placeholder
+                    // This can happen in tracer context where we encounter real runtime functions
+                    MoveValue::U8(0)
                 }
             },
 
-            (layout, val) => panic!("Cannot convert value {:?} as {:?}", val, layout),
+            // Call tracing is best-effort: a value/layout mismatch should make only this value a
+            // placeholder, rather than terminating the tracer process for the whole transaction.
+            (_layout, _val) => MoveValue::U8(0),
         }
     }
 }
